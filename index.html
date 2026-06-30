@@ -1,9 +1,83 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>test</title>
+    <title>3x3 Grid</title>
 </head>
 <body>
-    <h1>test</h1>
+    <div id="grid" style="display:grid;grid-template-columns:repeat(3,100px);gap:5px;margin:20px;"></div>
+    <button onclick="resetGrid()">Обнулить</button>
+
+    <script>
+        const ws = new WebSocket('wss://clickerbase.ru:9000');
+        const size = 9;
+        let grid = new Array(size).fill(0);
+        const encoder = new TextEncoder();
+
+        // Создаём сетку
+        const gridDiv = document.getElementById('grid');
+        for (let i = 0; i < size; i++) {
+            const cell = document.createElement('div');
+            cell.style.cssText = 'width:100px;height:100px;background:white;border:1px solid #333;cursor:pointer;';
+            cell.dataset.index = i;
+            cell.onclick = () => toggleCell(i);
+            gridDiv.appendChild(cell);
+        }
+
+        function toggleCell(index) {
+           // grid[index] = grid[index] === 0 ? 1 : 0;
+            updateCell(index);
+            sendMessage({action: "toggle", index: index});
+        }
+
+        function updateCell(index) {
+            const cells = document.querySelectorAll('#grid div');
+            cells[index].style.background = grid[index] === 1 ? 'black' : 'white';
+        }
+
+        function updateAllCells() {
+            for (let i = 0; i < size; i++) {
+                updateCell(i);
+            }
+        }
+
+        function resetGrid() {
+            sendMessage({action: "reset"});
+        }
+
+        function sendMessage(data) {
+            if (ws.readyState === WebSocket.OPEN) {
+                const json = JSON.stringify(data);
+                const binaryData = encoder.encode(json);
+                ws.send(binaryData);
+            }
+        }
+
+        // WebSocket
+        ws.onopen = () => {
+            console.log('Connected');
+            sendMessage({action: "get_state"});
+        };
+        
+        ws.onclose = () => {
+            console.log('Disconnected');
+        };
+        
+        ws.onmessage = (e) => {
+            e.data.text().then(text => {
+                console.log('Received:', text);
+                try {
+                    const data = JSON.parse(text);
+                    
+                    if (data.action === "state") {
+                        grid = data.grid;
+                        updateAllCells();
+                        console.log('Grid updated from server');
+                    }
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            });
+        };
+    </script>
 </body>
 </html>
