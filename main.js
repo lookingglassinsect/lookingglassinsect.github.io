@@ -23,116 +23,131 @@ import { createNetwork } from './network.js';
         [0, 0, 0, 0, 0]
     ];
 
-    const leftSquares = [        
+    const leftSquares = [
         [0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0]
-    ];   
-    const rightSquares = [        
+    ];
+    const rightSquares = [
         [0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0]
     ];
 
-    const rect = new PIXI.Graphics()
-        .rect(0.02*app.screen.width, 0.85*app.screen.height, 0.96*app.screen.width, 0.1*app.screen.height)
-        .fill(0xe94560);
-  //  rect.x =
-  const panel1 = new PIXI.Graphics()
-        .rect(0.05*app.screen.width, 0.02*app.screen.height, 0.4*app.screen.width, 0.8*app.screen.height)
-        .fill(0xe94560);
+    // Everything below is created once and positioned by layout(). Nothing keeps
+    // a position or a size that was computed at startup, because that is what
+    // used to desync the panels from the squares after a resize.
+    const rect = new PIXI.Graphics();
+    const panel1 = new PIXI.Graphics();
+    const panel2 = new PIXI.Graphics();
+    const circle = new PIXI.Graphics();
 
-  const panel2 = new PIXI.Graphics()
-        .rect(0.55*app.screen.width, 0.02*app.screen.height, 0.4*app.screen.width, 0.8*app.screen.height)
-        .fill(0xe94560);
-
-
-    const centerRect = () => {
-
-    };
+    // Side of one square, in screen pixels. drawSquare() needs it, and layout()
+    // recomputes it on every resize.
+    let sqX = 0;
 
     function drawSquare(g, isOn) {
-    g.clear();
-    g.rect(0, 0, sqX, sqX).fill(isOn ? 0xffffff : 0x000000);
-}
+        g.clear();
+        g.rect(0, 0, sqX, sqX).fill(isOn ? 0xffffff : 0x000000);
+    }
 
-    centerRect();
+    function layout() {
+        const w = app.screen.width;
+        const h = app.screen.height;
+
+        rect.clear()
+            .rect(0.02 * w, 0.85 * h, 0.96 * w, 0.1 * h)
+            .fill(0xe94560);
+
+        panel1.clear()
+            .rect(0.05 * w, 0.02 * h, 0.4 * w, 0.8 * h)
+            .fill(0xe94560);
+
+        panel2.clear()
+            .rect(0.55 * w, 0.02 * h, 0.4 * w, 0.8 * h)
+            .fill(0xe94560);
+
+        const sizeY = 0.8 * h;
+        const borderIndentY = 0.03 * h;
+        const sqIndentX = 0.02 * w;
+        const sqIndentY = 0.02 * h;
+
+        // Squares are sized by height, as before. The extra ceiling keeps the
+        // two columns inside a panel in a narrow window: 0.34w is the panel's
+        // inner width and 0.02w is the single gap between the columns. On a
+        // typical landscape screen the height rule is smaller and wins, so the
+        // usual look is unchanged.
+        const byHeight = (sizeY - borderIndentY * 2 - sqIndentY * 4) / 5;
+        const byWidth = (0.34 * w - 0.02 * w) / 2;
+        sqX = Math.max(1, Math.min(byHeight, byWidth));
+
+        for (let j = 0; j < 2; j++) {
+            for (let i = 0; i < 5; i++) {
+                const left = leftSquares[j][i];
+                left.x = 0.08 * w + sqX * j + sqIndentX * j;
+                left.y = 0.05 * h + sqX * i + sqIndentY * i;
+                drawSquare(left, leftT[j][i]);
+
+                const right = rightSquares[j][i];
+                right.x = w - sqX - (0.08 * w + sqX * j + sqIndentX * j);
+                right.y = 0.05 * h + sqX * i + sqIndentY * i;
+                drawSquare(right, rightT[j][i]);
+            }
+        }
+
+        circle.clear()
+            .circle(0, 0, 0.05 * h)
+            .fill(0x2ecc71);
+        circle.x = 0.1 * w;
+        circle.y = 0.9 * h;
+    }
+
     app.stage.addChild(rect);
     app.stage.addChild(panel1);
     app.stage.addChild(panel2);
 
-    const sizeX = 0.4*app.screen.width;
-    const sizeY = 0.8*app.screen.height;
-
-    const borderIndentX = 0.03 * app.screen.width ;
-    const borderIndentY = 0.03 * app.screen.height;
-    
-    const sqIndentX = 0.02 * app.screen.width ;
-    const sqIndentY = 0.02 * app.screen.height;
-
-    const sqX = (sizeY - borderIndentY*2 - sqIndentY*4)/5;
-
-
-for (let j = 0; j < 2; j++) {
-    for (let i = 0; i < 5; i++) {
-        const square = new PIXI.Graphics();
-        square.x = 0.08*app.screen.width + sqX*j + sqIndentX*j;
-        square.y = 0.05*app.screen.height + sqX*i + sqIndentY*i;
-        square.rect(0, 0, sqX, sqX).fill(0x000000);
-        leftSquares[j][i] = square;
-        app.stage.addChild(square);
+    for (let j = 0; j < 2; j++) {
+        for (let i = 0; i < 5; i++) {
+            const square = new PIXI.Graphics();
+            leftSquares[j][i] = square;
+            app.stage.addChild(square);
+        }
     }
-}
 
-for (let j = 0; j < 2; j++) {
-    for (let i = 0; i < 5; i++) {
-        const square = new PIXI.Graphics();
-        square.x = app.screen.width - sqX - (0.08*app.screen.width + sqX*j + sqIndentX*j);
-        square.y = 0.05*app.screen.height + sqX*i + sqIndentY*i;
-        square.rect(0, 0, sqX, sqX).fill(0x000000);
-        rightSquares[j][i] = square;
-        app.stage.addChild(square);
+    for (let j = 0; j < 2; j++) {
+        for (let i = 0; i < 5; i++) {
+            const square = new PIXI.Graphics();
+            rightSquares[j][i] = square;
+            app.stage.addChild(square);
+        }
     }
-}
-
-const circle = new PIXI.Graphics()
-    .circle(0.1*app.screen.width, 0.9*app.screen.height, app.screen.height*0.05)   
-    .fill(0x2ecc71);
 
     circle.eventMode = 'static';
     circle.on('pointerdown', () => {
-    console.log('Круг нажат!');
-    net.send({ action: 'reset'});
-});
+        console.log('Круг нажат!');
+        net.send({ action: 'reset' });
+    });
 
-app.stage.addChild(circle);
+    app.stage.addChild(circle);
 
-        const net = createNetwork('wss://clickerbase.ru:9000', handleServerMessage);
+    const net = createNetwork('wss://clickerbase.ru:9000', handleServerMessage);
 
     function handleServerMessage(data) {
+        console.log('Сервер прислал:', data);
+        if (data.action === 'state') {
+            for (let j = 0; j < 2; j++) {
+                for (let i = 0; i < 5; i++) {
+                    leftT[j][i] = data.leftGrid[j][i];
+                    rightT[j][i] = data.rightGrid[j][i];
 
-    console.log('Сервер прислал:', data);
-    if (data.action=="state") {
-        for (let j=0; j<2; j++)
-            for (let i=0; i<5; i++) {
-            leftT[j][i] = data.leftGrid[j][i];
-            rightT[j][i] = data.rightGrid[j][i];
-            
-            drawSquare(leftSquares[j][i],  leftT[j][i]);
-            drawSquare(rightSquares[j][i], rightT[j][i]);
-
+                    drawSquare(leftSquares[j][i], leftT[j][i]);
+                    drawSquare(rightSquares[j][i], rightT[j][i]);
+                }
             }
-
-
-        console.log(data.leftGrid[0][0]);
-
+        }
     }
-}
 
-
-    // No initial toggle here: it used to be sent while the socket was still
-    // CONNECTING, so it was dropped. The state now arrives from onopen →
-    // get_state, including after a reconnect.
-
-    window.addEventListener('resize', centerRect);
+    // The renderer fires 'resize' after app.screen already holds the new size,
+    // which the window event does not guarantee (listener order). resizeTo:window
+    // keeps the renderer itself in step with the window.
+    app.renderer.on('resize', layout);
+    layout();
 })();
-
-
