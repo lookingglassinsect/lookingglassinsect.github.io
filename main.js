@@ -128,8 +128,9 @@ app.stage.addChild(circle);
 }
 
 
-    net.send({ action: 'toggle', index: 0 });
-
+    // No initial toggle here: it used to be sent while the socket was still
+    // CONNECTING, so it was dropped. The state now arrives from onopen →
+    // get_state, including after a reconnect.
 
     window.addEventListener('resize', centerRect);
 })();
