@@ -128,11 +128,30 @@ import { createNetwork } from './network.js';
 
     app.stage.addChild(circle);
 
-    const net = createNetwork('wss://clickerbase.ru:9000', handleServerMessage);
+    // Highest sequence number shown so far. Broadcasts are not ordered — two
+    // threads can deliver snapshots in the opposite order — so anything not
+    // newer than this is a state the board has already moved past.
+    let lastSeq = 0;
+
+    const net = createNetwork(
+        'wss://clickerbase.ru:9000',
+        handleServerMessage,
+        // A restarted server counts from 1 again. Without this reset the board
+        // would ignore everything it sent after the restart.
+        () => { lastSeq = 0; },
+    );
 
     function handleServerMessage(data) {
         console.log('Сервер прислал:', data);
         if (data.action === 'state') {
+            if (typeof data.seq === 'number') {
+                if (data.seq <= lastSeq) {
+                    console.log('Ignoring stale state, seq', data.seq, '<=', lastSeq);
+                    return;
+                }
+                lastSeq = data.seq;
+            }
+
             for (let j = 0; j < 2; j++) {
                 for (let i = 0; i < 5; i++) {
                     leftT[j][i] = data.leftGrid[j][i];

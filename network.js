@@ -13,7 +13,7 @@ const MIN_DELAY = 1000;      // first retry after one second
 const MAX_DELAY = 15000;     // never wait longer than this between attempts
 const FACTOR = 2;            // 1s, 2s, 4s, 8s, then capped at 15s
 
-export function createNetwork(url, onMessage) {
+export function createNetwork(url, onMessage, onOpen) {
     const encoder = new TextEncoder();
 
     let socket = null;
@@ -96,6 +96,12 @@ export function createNetwork(url, onMessage) {
             if (socket !== ws) return;
             console.log('Connected');
             delay = MIN_DELAY;   // a working connection resets the backoff
+
+            // Told before the first message: the caller may need to forget
+            // state that belonged to the previous connection (a restarted
+            // server starts counting again).
+            if (onOpen) onOpen();
+
             send({ action: 'get_state' });
         };
 
