@@ -95,7 +95,7 @@ for (let j = 0; j < 2; j++) {
 
 const circle = new PIXI.Graphics()
     .circle(0.1*app.screen.width, 0.9*app.screen.height, app.screen.height*0.05)   
-    .fill(0xf09000);
+    .fill(0x2ecc71);
 
     circle.eventMode = 'static';
     circle.on('pointerdown', () => {

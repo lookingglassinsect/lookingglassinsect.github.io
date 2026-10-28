@@ -4,7 +4,7 @@
 
         function send(data) {
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(encoder.encode(JSON.stringify(data)));
+                ws.send(encoder.encode(JSON.stringify(data) + '\n'));
             }
         }
 
