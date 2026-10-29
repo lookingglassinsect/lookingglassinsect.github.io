@@ -46,6 +46,12 @@ import { createNetwork } from './network.js';
     const EMPTY_COLOR = 0x1b2744;
     const SELECT_COLOR = 0xffe680;
 
+    // The two units the player commands are the same side in a paler blue: the
+    // ally's three keep the normal one. The whole mark is the colour of the
+    // tile, because a bar or a badge would fight for room with the role glyph
+    // and the health bar that already sit there.
+    const MINE_COLOR = 0x62b0f0;
+
     // Everything below is created once and positioned by layout(). Nothing keeps
     // a position or a size that was computed at startup, because that is what
     // used to desync the panels from the squares after a resize.
@@ -100,7 +106,11 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(SIDE_COLOR[side]);
+        // A tile whose unit answers to the player is painted in the paler blue.
+        // Most of our line is an ally fighting on its own, and without the tint
+        // there is no way to tell which taps do anything until one is refused.
+        const mine = side === 0 && canCommand(unit);
+        g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(mine ? MINE_COLOR : SIDE_COLOR[side]);
 
         // The unit the player has picked to command. Drawn as a ring inside the
         // tile so the tile itself keeps the colour of its side.
@@ -274,6 +284,16 @@ import { createNetwork } from './network.js';
     let orders = [];
     const unitsById = new Map();
 
+    // The ids the server says are the player's to command. Our side is not all
+    // ours: the rest of the line is an ally that fights by itself. Null means
+    // the server did not say - an older build - and then every unit of ours is
+    // treated as commandable, which is how it used to be.
+    let yours = null;
+
+    function canCommand(unit) {
+        return yours === null || yours.has(unit.id);
+    }
+
     // The reply to the last tap, shown for a moment instead of the standing
     // hint, so a refused order never looks like a click that got lost.
     let flashText = '';
@@ -325,9 +345,22 @@ import { createNetwork } from './network.js';
             unitsById.set(unit.id, unit);
         }
 
+        // A new battle starts its clock at zero, and unit ids restart at 1 with
+        // it. The pick has to be dropped here, before the board is drawn: the
+        // same number in the new fight is a different unit, so keeping it would
+        // put the ring on somebody else and send the next order to them.
+        const drift = data.t - battleT;
+        const newBattle = Math.abs(drift) > 250;
+        if (newBattle) selected = 0;
+
         // A unit that died cannot stay picked: its id is gone from the snapshot
         // and the next order would be refused for a unit that no longer exists.
         if (selected && !unitsById.has(selected)) selected = 0;
+
+        // Which units answer to the player. Guarded by the key, not by "is it
+        // empty": an empty list is a real answer (none of ours are left), while
+        // a missing one means an older server that calls the whole side ours.
+        yours = Array.isArray(data.yours) ? new Set(data.yours) : null;
 
         orders = data.orders || [];
 
@@ -341,10 +374,9 @@ import { createNetwork } from './network.js';
             shotsGfx.clear();
         }
 
-        // A new battle resets the server's clock to zero, which is a jump far
-        // bigger than the drift this smooths; anything that large is taken as is.
-        const drift = data.t - battleT;
-        battleT += Math.abs(drift) > 250 ? drift : drift * 0.25;
+        // A clock jump that large is a new battle, not drift, so it is taken as
+        // is. newBattle is already known above and told the pick to let go.
+        battleT += newBattle ? drift : drift * 0.25;
 
         statusText.text = {
             left_won: 'победа синих',
@@ -372,6 +404,7 @@ import { createNetwork } from './network.js';
         orders = [];
         running = false;
         selected = 0;
+        yours = null;
         unitsById.clear();
         shotsGfx.clear();
         ordersGfx.clear();
@@ -432,6 +465,9 @@ import { createNetwork } from './network.js';
     // names its target. The rules are not repeated here - the server checks the
     // order and answers with `order_result`, and the snapshot says which orders
     // are really in force.
+    //
+    // Not every unit of ours is ours to command, so the tap says so instead of
+    // selecting something that could only produce a refusal.
     function cellClicked(side, col, row) {
         const unit = grids[side][col][row];
 
@@ -446,6 +482,11 @@ import { createNetwork } from './network.js';
         }
 
         if (side === 0) {
+            if (!canCommand(unit)) {
+                flash('этот юнит не твой — командуй светлыми', false);
+                return;
+            }
+
             selected = selected === unit.id ? 0 : unit.id;
             redrawBoard();
             updateOrderHint();
@@ -466,7 +507,8 @@ import { createNetwork } from './network.js';
     }
 
     // What the server made of the last order. The wire carries short codes, so
-    // the wording lives here, next to the rest of the Russian text.
+    // the wording lives here, next to the rest of the Russian text. `not-yours`
+    // is the other side; `not-commanded` is an ally of ours that fights alone.
     const REASON_TEXT = {
         ok: 'приказ принят',
         cleared: 'приказ снят',
@@ -474,7 +516,9 @@ import { createNetwork } from './network.js';
         refused: 'цель недоступна',
         'no-unit': 'этот юнит уже мёртв',
         'not-yours': 'это чужой юнит',
+        'not-commanded': 'этот юнит не твой — командуй светлыми',
         over: 'бой уже окончен',
+        'bad-request': 'сервер не понял приказ',
     };
 
     function applyOrderResult(data) {
@@ -589,7 +633,7 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        setHint('тап по своему юниту — выбрать, по врагу — приказать');
+        setHint('светлые юниты — твои: тап по своему, потом по врагу');
     }
 
     app.ticker.add((ticker) => {
