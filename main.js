@@ -13,6 +13,20 @@ import { createNetwork } from './network.js';
 
     document.body.appendChild(app.canvas);
 
+    // Six classes, one sprite each. A class is a skin for now: it picks which
+    // model stands on the tile and changes nothing about how the unit fights.
+    // Loaded once at startup so drawCell can swap a sprite in for the glyph; a
+    // sprite that fails to load leaves that class on the glyph fallback.
+    const CLASS_NAMES = ['knight', 'berserker', 'assassin', 'healer', 'mage', 'archer'];
+    const classTextures = {};
+    for (const name of CLASS_NAMES) {
+        try {
+            classTextures[name] = await PIXI.Assets.load(`assets/${name}.png`);
+        } catch (err) {
+            console.warn(`asset ${name} not loaded:`, err);
+        }
+    }
+
     // A cell holds a unit or nothing. The server sends a flat list of units;
     // these two grids are that list laid out by cell, [side][col][row], where
     // col 1 is the front line next to the middle of the board. Our side is
@@ -147,9 +161,25 @@ import { createNetwork } from './network.js';
     let sqX = 0;
 
     function drawCell(g, unit, side) {
+        // A cell is one Graphics for the tile plus two children drawn on top:
+        // the class sprite (which fills the whole tile) and an overlay for the
+        // selection ring and the health bar. Both are created once, in this
+        // order, so the overlay always sits above the sprite.
+        if (!g.modelSprite) {
+            g.modelSprite = new PIXI.Sprite();
+            g.modelSprite.anchor.set(0.5);
+            g.addChild(g.modelSprite);
+        }
+        if (!g.overlay) {
+            g.overlay = new PIXI.Graphics();
+            g.addChild(g.overlay);
+        }
+
         g.clear();
+        g.overlay.clear();
 
         if (!unit) {
+            g.modelSprite.visible = false;
             g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(EMPTY_COLOR);
             return;
         }
@@ -160,44 +190,57 @@ import { createNetwork } from './network.js';
         const mine = side === 0 && canCommand(unit);
         g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(mine ? MINE_COLOR : SIDE_COLOR[side]);
 
-        // The unit the player has picked to command. Drawn as a ring inside the
-        // tile so the tile itself keeps the colour of its side.
+        // A class is a skin: when its sprite is loaded, it fills the whole tile
+        // in place of the role glyph. The glyph stays as the fallback for an
+        // older server that sends no class, or a sprite that failed to load. A
+        // square is a melee unit, a diamond a ranged one; the column already
+        // tells the player which line the unit stands in.
+        if (unit.class && classTextures[unit.class]) {
+            g.modelSprite.texture = classTextures[unit.class];
+            g.modelSprite.width = sqX;
+            g.modelSprite.height = sqX;
+            g.modelSprite.position.set(sqX * 0.5, sqX * 0.5);
+            g.modelSprite.visible = true;
+        }
+        else {
+            g.modelSprite.visible = false;
+
+            const cx = sqX * 0.5;
+            const cy = sqX * 0.42;
+            const r = sqX * (unit.role === 'ranged' ? 0.17 : 0.15);
+
+            if (unit.role === 'ranged') {
+                g.poly([cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy])
+                    .fill({ color: 0xffffff, alpha: 0.8 });
+            }
+            else {
+                g.rect(cx - r, cy - r, r * 2, r * 2)
+                    .fill({ color: 0xffffff, alpha: 0.8 });
+            }
+        }
+
+        // The unit the player has picked to command, drawn on the overlay so the
+        // ring stays visible on top of a full-tile sprite.
         if (side === 0 && unit.id === selected) {
             const inset = Math.max(1.5, sqX * 0.05);
-            g.roundRect(inset, inset, sqX - inset * 2, sqX - inset * 2, sqX * 0.05)
+            g.overlay.roundRect(inset, inset, sqX - inset * 2, sqX - inset * 2, sqX * 0.05)
                 .stroke({ width: Math.max(2, sqX * 0.045), color: SELECT_COLOR, alpha: 0.95 });
         }
 
-        // Role as a glyph rather than a different cell shape: the board is the
-        // same 2x5 as before, and a melee unit and a ranged one differ by what
-        // stands on the tile. A square is a melee unit, a diamond is a ranged
-        // one. The column already tells the player which line it is in.
-        const cx = sqX * 0.5;
-        const cy = sqX * 0.42;
-        const r = sqX * (unit.role === 'ranged' ? 0.17 : 0.15);
-
-        if (unit.role === 'ranged') {
-            g.poly([cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy])
-                .fill({ color: 0xffffff, alpha: 0.8 });
-        }
-        else {
-            g.rect(cx - r, cy - r, r * 2, r * 2)
-                .fill({ color: 0xffffff, alpha: 0.8 });
-        }
-
-        // Health as a bar along the bottom: it is the only number on the board
-        // for now, and a bar reads faster than a number would.
+        // Health as a bar along the bottom, also on the overlay so it reads on
+        // top of the sprite. It is the only number on the board for now, and a
+        // bar reads faster than a number would.
         const pad = sqX * 0.12;
         const barH = Math.max(3, sqX * 0.12);
         const barW = sqX - pad * 2;
         const barY = sqX - pad - barH;
 
         const frac = Math.max(0, Math.min(1, unit.hp / unit.maxHp));
-        g.rect(pad, barY, barW, barH).fill(0x0d1526);
+        g.overlay.rect(pad, barY, barW, barH).fill(0x0d1526);
 
         if (frac > 0) {
             const color = frac > 0.5 ? 0x51cf66 : frac > 0.25 ? 0xffd43b : 0xff6b6b;
-            g.rect(pad, barY, barW * frac, barH).fill(color);
+            g.overlay.rect(pad, barY, barW * frac, barH).fill(color);
         }
     }
 
