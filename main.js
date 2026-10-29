@@ -18,12 +18,82 @@ import { createNetwork } from './network.js';
     // Loaded once at startup so drawCell can swap a sprite in for the glyph; a
     // sprite that fails to load leaves that class on the glyph fallback.
     const CLASS_NAMES = ['knight', 'berserker', 'assassin', 'healer', 'mage', 'archer'];
+
+    // Passive talent icons live in assets/passives/<folder>/<prefix>_<slot+1>.png.
+    // The berserker's folder is "barbarian" and its prefix "barb", so the asset
+    // layout does not match the class id; this table bridges the two.
+    const TALENT_ASSET = {
+        knight:     { folder: 'knight',     prefix: 'knight' },
+        berserker:  { folder: 'barbarian',  prefix: 'barb' },
+        assassin:   { folder: 'assassin',   prefix: 'assassin' },
+        healer:     { folder: 'healer',     prefix: 'healer' },
+        mage:       { folder: 'mage',       prefix: 'mage' },
+        archer:     { folder: 'archer',     prefix: 'archer' },
+    };
+
+    // The three talents per class, in slot order. Each `effects` entry is the
+    // display text for talent level 1/2/3, so the upgrade preview reads the
+    // entry after the current level. The values mirror server/battle.h exactly.
+    const TALENT_DATA = {
+        knight: [
+            { name: 'Крепость', effects: ['+20 к здоровью', '+30 к здоровью', '+40 к здоровью'] },
+            { name: 'Превозмогание', effects: ['лечит 15 здоровья, когда союзник погибает', 'лечит 25 здоровья, когда союзник погибает', 'лечит 40 здоровья, когда союзник погибает'] },
+            { name: 'Последний герой', effects: ['+50% к урону, когда ты последний в команде', '+75% к урону, когда ты последний в команде', '+100% к урону, когда ты последний в команде'] },
+        ],
+        berserker: [
+            { name: 'Кровожадность', effects: ['восстанавливает 1 здоровье при попадании', 'восстанавливает 2 здоровья при попадании', 'восстанавливает 3 здоровья при попадании'] },
+            { name: 'Ярость', effects: ['атака быстрее на 0,05 с', 'атака быстрее на 0,1 с', 'атака быстрее на 0,15 с'] },
+            { name: 'Возмездие', effects: ['+20% к урону при здоровье ниже половины', '+30% к урону при здоровье ниже половины', '+40% к урону при здоровье ниже половины'] },
+        ],
+        assassin: [
+            { name: 'Хитрость', effects: ['+5% к шансу крита', '+10% к шансу крита', '+15% к шансу крита'] },
+            { name: 'Коварность', effects: ['+20% к силе крита', '+40% к силе крита', '+60% к силе крита'] },
+            { name: 'Засада', effects: ['первая атака наносит +20% урона', 'первая атака наносит +35% урона', 'первая атака наносит +50% урона'] },
+        ],
+        healer: [
+            { name: 'Аура зоркости', effects: ['союзники: +3% к шансу крита', 'союзники: +5% к шансу крита', 'союзники: +7% к шансу крита'] },
+            { name: 'Аура гнева', effects: ['союзники: +2 к урону', 'союзники: +3 к урону', 'союзники: +4 к урону'] },
+            { name: 'Аура лечения', effects: ['каждые 6 с лечит команду на 3', 'каждые 6 с лечит команду на 5', 'каждые 6 с лечит команду на 7'] },
+        ],
+        mage: [
+            { name: 'Мудрость', effects: ['перезарядка способности на 1 с быстрее', 'перезарядка способности на 3 с быстрее', 'перезарядка способности на 5 с быстрее'] },
+            { name: 'Древние тайны', effects: ['+10 к урону способности', '+15 к урону способности', '+20 к урону способности'] },
+            { name: 'Могущество', effects: ['+2 к урону атаки', '+4 к урону атаки', '+6 к урону атаки'] },
+        ],
+        archer: [
+            { name: 'Ловкость', effects: ['+7% к уклонению', '+14% к уклонению', '+21% к уклонению'] },
+            { name: 'Снайпер', effects: ['+4 урона по дальним целям', '+8 урона по дальним целям', '+12 урона по дальним целям'] },
+            { name: 'Навыки охоты', effects: ['+2% крит и +10% к силе крита', '+4% крит и +15% к силе крита', '+6% крит и +20% к силе крита'] },
+        ],
+    };
+
+    // XP to go from this level to the next (level 6 is the cap). Mirrors the
+    // server, so the inventory can show "3 / 10" without asking for it.
+    function xpForLevel(level) {
+        return [0, 5, 10, 20, 30, 40][level] || 0;
+    }
+
     const classTextures = {};
     for (const name of CLASS_NAMES) {
         try {
             classTextures[name] = await PIXI.Assets.load(`assets/${name}.png`);
         } catch (err) {
             console.warn(`asset ${name} not loaded:`, err);
+        }
+    }
+
+    // The passive talent icons, three per class, loaded like the class sprites.
+    const passiveTextures = {};   // cls -> [slot0, slot1, slot2]
+    for (const cls of CLASS_NAMES) {
+        passiveTextures[cls] = [null, null, null];
+        const a = TALENT_ASSET[cls];
+        for (let slot = 0; slot < 3; slot++) {
+            const path = `assets/passives/${a.folder}/${a.prefix}_${slot + 1}.png`;
+            try {
+                passiveTextures[cls][slot] = await PIXI.Assets.load(path);
+            } catch (err) {
+                console.warn(`passive asset ${path} not loaded:`, err);
+            }
         }
     }
 
@@ -298,6 +368,10 @@ import { createNetwork } from './network.js';
         text: '',
         style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
     });
+    const invCharLevel = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
     const invCharStats = new PIXI.Text({
         text: '',
         style: { fontFamily: 'monospace', fill: 0xffffff },
@@ -360,6 +434,62 @@ import { createNetwork } from './network.js';
     });
     invBtnText.anchor.set(0.5, 0.5);
 
+    // The lobby's third button, into the talent tree, under the inventory button.
+    const talentBtn = new PIXI.Graphics();
+    const talentBtnText = new PIXI.Text({
+        text: 'таланты',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    talentBtnText.anchor.set(0.5, 0.5);
+
+    // The talent tree overlay: the class's three talents as three icons, the
+    // selected talent's description, and an upgrade button. Like the inventory,
+    // it is one Pixi scene drawn above the lobby and routed through tapLayer.
+    const talentScene = new PIXI.Container();
+    const talentBackdrop = new PIXI.Graphics();
+    const talentPanel = new PIXI.Graphics();
+    const talentTitle = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    talentTitle.anchor.set(0.5, 0);
+    const talentPointsText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    talentPointsText.anchor.set(0.5, 0);
+    const talentDescText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    const talentUpgradeBtn = new PIXI.Graphics();
+    const talentUpgradeBtnText = new PIXI.Text({
+        text: 'улучшить',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    talentUpgradeBtnText.anchor.set(0.5, 0.5);
+    const talentCloseBtn = new PIXI.Graphics();
+    const talentCloseBtnText = new PIXI.Text({
+        text: '✕',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    talentCloseBtnText.anchor.set(0.5, 0.5);
+
+    // Three icon slots (one per talent): a background for the selection ring, the
+    // passive icon, and a small "N/3" label underneath.
+    const talentIcons = [];
+    for (let slot = 0; slot < 3; slot++) {
+        const bg = new PIXI.Graphics();
+        const icon = new PIXI.Sprite(PIXI.Texture.WHITE);
+        icon.anchor.set(0.5);
+        const label = new PIXI.Text({
+            text: '',
+            style: { fontFamily: 'monospace', fill: 0xffffff },
+        });
+        label.anchor.set(0.5, 0);
+        talentIcons.push({ bg, icon, label, rect: null });
+    }
+
     // Hit-test rectangles, filled by layoutLobby()/renderLobby() and read by the
     // tap layer. They are plain data for the same reason the board routes taps
     // through arithmetic rather than per-shape handlers.
@@ -386,6 +516,14 @@ import { createNetwork } from './network.js';
     let invCloseRect = null;
     let invBtnRect = null;
     let hoverInvBtn = false;
+
+    // Talent tree hit-test rectangles and state, filled by layoutTalents() and
+    // read by the tap layer.
+    let talentBtnRect = null;
+    let talentUpgradeRect = null;
+    let talentCloseRect = null;
+    let hoverTalentBtn = false;
+    let talentSelected = 0;
 
     // Side of one square, in screen pixels. drawCell() needs it, and layout()
     // recomputes it on every resize.
@@ -587,6 +725,7 @@ import { createNetwork } from './network.js';
         layoutLobby();
         layoutCharScene();
         layoutInventory();
+        layoutTalents();
 
         // A resize also re-lays the cards; they are positioned from the screen,
         // not from a stored size, so they have to be rebuilt at the new size.
@@ -599,6 +738,7 @@ import { createNetwork } from './network.js';
         if (overlay === 'select') renderCharSelect();
         else if (overlay === 'profile') renderCharProfile();
         else if (overlay === 'inventory') renderInventory();
+        else if (overlay === 'talents') renderTalents();
     }
 
     // Positions the lobby scene. Called from layout() on every resize, and its
@@ -654,6 +794,13 @@ import { createNetwork } from './network.js';
         invBtnText.x = invBtnRect.x + ibw / 2;
         invBtnText.y = invBtnRect.y + ibh / 2;
 
+        const tbw = Math.round(0.15 * w);
+        const tbh = Math.round(0.06 * h);
+        talentBtnRect = { x: w - tbw - 0.02 * w, y: invBtnRect.y + ibh + 0.012 * h, w: tbw, h: tbh };
+        talentBtnText.style.fontSize = Math.round(0.026 * h);
+        talentBtnText.x = talentBtnRect.x + tbw / 2;
+        talentBtnText.y = talentBtnRect.y + tbh / 2;
+
         paintLobby();
     }
 
@@ -702,19 +849,27 @@ import { createNetwork } from './network.js';
     lobbyScene.addChild(charBtnText);
     lobbyScene.addChild(invBtn);
     lobbyScene.addChild(invBtnText);
+    lobbyScene.addChild(talentBtn);
+    lobbyScene.addChild(talentBtnText);
 
     charScene.addChild(charBackdrop, charPanel, charTitle, charSprite, charStats,
                        arrowLeft, arrowRight, charActionBtn, charActionBtnText,
                        charCloseBtn, charCloseBtnText);
 
     invScene.addChild(invBackdrop, invPanel, invTitle, invCharSprite, invCharName,
-                      invCharStats, invSlots, invDescText, invEmptyPanel,
+                      invCharLevel, invCharStats, invSlots, invDescText, invEmptyPanel,
                       invDeleteBtn, invDeleteBtnText, invCloseBtn, invCloseBtnText);
+
+    talentScene.addChild(talentBackdrop, talentPanel, talentTitle, talentPointsText,
+                         talentDescText, talentUpgradeBtn, talentUpgradeBtnText,
+                         talentCloseBtn, talentCloseBtnText);
+    for (const t of talentIcons) talentScene.addChild(t.bg, t.icon, t.label);
 
     app.stage.addChild(boardScene);
     app.stage.addChild(lobbyScene);
     app.stage.addChild(charScene);
     app.stage.addChild(invScene);
+    app.stage.addChild(talentScene);
     app.stage.addChild(tapLayer);
 
     // The login form covers both scenes until the player is authenticated.
@@ -722,6 +877,7 @@ import { createNetwork } from './network.js';
     lobbyScene.visible = false;
     charScene.visible = false;
     invScene.visible = false;
+    talentScene.visible = false;
 
     tapLayer.on('pointerdown', onTap);
     // A hint that something is clickable, from the same arithmetic as the tap.
@@ -737,19 +893,25 @@ import { createNetwork } from './network.js';
             over = inRect(x, y, actionBtnRect) || inRect(x, y, closeBtnRect);
         } else if (overlay === 'inventory') {
             over = invHit(x, y) || inRect(x, y, deleteBtnRect) || inRect(x, y, invCloseRect);
+        } else if (overlay === 'talents') {
+            over = inRect(x, y, talentUpgradeRect) || inRect(x, y, talentCloseRect)
+                || talentIcons.some((t) => inRect(x, y, t.rect));
         } else if (screen === 'lobby') {
             const nc = createHit(x, y);
             const ni = cardHit(x, y);
             const ch = charHit(x, y);
             const ih = inRect(x, y, invBtnRect);
-            if (nc !== hoverCreate || ni !== hoverCard || ch !== hoverCharBtn || ih !== hoverInvBtn) {
+            const th = talentHit(x, y);
+            if (nc !== hoverCreate || ni !== hoverCard || ch !== hoverCharBtn
+                || ih !== hoverInvBtn || th !== hoverTalentBtn) {
                 hoverCreate = nc;
                 hoverCard = ni;
                 hoverCharBtn = ch;
                 hoverInvBtn = ih;
+                hoverTalentBtn = th;
                 paintLobby();
             }
-            over = nc || ni >= 0 || ch || ih;
+            over = nc || ni >= 0 || ch || ih || th;
         } else {
             over = leaveHit(x, y) || (amOwner && overCircle(x, y))
                 || (mySide >= 0 && abilityHit(x, y)) || cellAt(x, y);
@@ -794,6 +956,14 @@ import { createNetwork } from './network.js';
     let myInventory = [];
     let myEquipment = {};
     let invSelectedUid = null;
+
+    // Progression: level, current xp (toward the next level), unspent talent
+    // points, and the three talent levels. Mirrored from the account on login
+    // and updated by `progress` (battle wins) and `talent_result`.
+    let myLevel = 1;
+    let myXp = 0;
+    let myTalentPoints = 0;
+    let myTalents = [0, 0, 0];
 
     // Our own copy of the battle clock, in milliseconds since the battle began.
     // It runs every frame, so a shot can be drawn between two snapshots instead
@@ -903,6 +1073,10 @@ import { createNetwork } from './network.js';
             if (Array.isArray(data.classes)) classList = data.classes;
             myInventory = Array.isArray(data.inventory) ? data.inventory : [];
             myEquipment = data.equipment && typeof data.equipment === 'object' ? data.equipment : {};
+            myLevel = Number.isInteger(data.level) ? data.level : 1;
+            myXp = Number.isInteger(data.xp) ? data.xp : 0;
+            myTalentPoints = Number.isInteger(data.talentPoints) ? data.talentPoints : 0;
+            myTalents = Array.isArray(data.talents) ? data.talents.map((n) => Number(n) || 0).slice(0, 3) : [0, 0, 0];
             invSelectedUid = null;
             setLoginMsg('');
 
@@ -964,6 +1138,7 @@ import { createNetwork } from './network.js';
     }
 
     function charHit(x, y) { return inRect(x, y, charBtnRect); }
+    function talentHit(x, y) { return inRect(x, y, talentBtnRect); }
 
     function setLobbyMsg(text) {
         lobbyMsg.text = text;
@@ -1010,6 +1185,13 @@ import { createNetwork } from './network.js';
                 .roundRect(invBtnRect.x, invBtnRect.y, invBtnRect.w, invBtnRect.h,
                            Math.min(10, invBtnRect.h * 0.3))
                 .fill(hoverInvBtn ? 0xff5d78 : 0xe94560);
+        }
+
+        if (talentBtnRect) {
+            talentBtn.clear()
+                .roundRect(talentBtnRect.x, talentBtnRect.y, talentBtnRect.w, talentBtnRect.h,
+                           Math.min(10, talentBtnRect.h * 0.3))
+                .fill(hoverTalentBtn ? 0xff5d78 : 0xe94560);
         }
 
         for (let i = 0; i < cardObjects.length; i++) {
@@ -1286,6 +1468,13 @@ import { createNetwork } from './network.js';
         return parts.join('\n');
     }
 
+    // The level and xp line shown under the nickname in the inventory. At the
+    // cap it stops counting; otherwise it shows progress toward the next level.
+    function levelXpText() {
+        if (myLevel >= 6) return 'Уровень 6\nОпыт: максимум';
+        return 'Уровень ' + myLevel + '\nОпыт: ' + myXp + ' / ' + xpForLevel(myLevel);
+    }
+
     // The character column: the class base stats with the equipment bonus shown
     // in place, so what the player sees is what the next battle will use.
     function invStatsText() {
@@ -1382,6 +1571,11 @@ import { createNetwork } from './network.js';
         invCharName.style.fontSize = Math.round(0.032 * h);
         invCharName.x = leftX + leftW / 2;
         invCharName.y = py + ph * 0.14;
+        // The level/xp line sits right under the nickname; its y is finalised in
+        // renderInventory() once the nickname text is set and has a height.
+        invCharLevel.anchor.set(0.5, 0);
+        invCharLevel.style.fontSize = Math.round(0.024 * h);
+        invCharLevel.x = leftX + leftW / 2;
         invCharStats.anchor.set(0, 0);
         invCharStats.style.fontSize = Math.max(11, Math.round(0.026 * h));
         invCharStats.x = leftX + leftW * 0.06;
@@ -1454,6 +1648,8 @@ import { createNetwork } from './network.js';
     function renderInventory() {
         const info = classList.find((c) => c.class === myCls);
         invCharName.text = myName || '';
+        invCharLevel.text = levelXpText();
+        invCharLevel.y = invCharName.y + invCharName.height + Math.round(0.006 * app.screen.height);
         invCharSprite.texture = classSprite(info);
         invCharSprite.visible = true;
         invCharStats.text = invStatsText();
@@ -1529,10 +1725,209 @@ import { createNetwork } from './network.js';
             myEquipment = data.equipment && typeof data.equipment === 'object' ? data.equipment : {};
             invSelectedUid = null;
             charIndex = 0;
+            myLevel = 1;
+            myXp = 0;
+            myTalentPoints = 0;
+            myTalents = [0, 0, 0];
             openCharSelect();
         } else {
             console.warn('restart failed:', data.reason);
         }
+    }
+
+    // --- talent tree ---------------------------------------------------------
+    // The class's three talents, each upgradeable to level 3. The server owns the
+    // numbers; the client only renders the tree and asks for an upgrade, and the
+    // reply (talent_result) folds the new level/points/talents back in.
+
+    function talentDescription(cls, slot, level) {
+        const list = TALENT_DATA[cls];
+        const t = list && list[slot];
+        if (!t) return '';
+        const lines = [t.name];
+        if (level >= 1) {
+            lines.push('Уровень ' + level + '/3');
+            lines.push('');
+            lines.push('Сейчас: ' + t.effects[level - 1]);
+        } else {
+            lines.push('Не изучен');
+            lines.push('');
+            lines.push('Сейчас: нет эффекта');
+        }
+        if (level < 3) lines.push('Следующий: ' + t.effects[level]);
+        return lines.join('\n');
+    }
+
+    // Level 1/2/3 of a talent needs character level 2/4/6, matching the server.
+    function talentUpgradeAllowed(slot) {
+        if (!myCls || slot < 0 || slot > 2) return false;
+        const level = myTalents[slot] || 0;
+        if (level >= 3) return false;
+        if (myTalentPoints <= 0) return false;
+        return myLevel >= 2 * (level + 1);
+    }
+
+    // Positions the talent panel; only geometry lives here. Text, textures and
+    // the upgrade button's state are set by renderTalents()/paintTalents().
+    function layoutTalents() {
+        const w = app.screen.width;
+        const h = app.screen.height;
+
+        talentBackdrop.clear().rect(0, 0, w, h).fill({ color: 0x0d1526, alpha: 0.72 });
+
+        const pw = Math.min(0.62 * w, 560);
+        const ph = Math.min(0.82 * h, 600);
+        const px = (w - pw) / 2;
+        const py = (h - ph) / 2;
+        talentPanel.clear().roundRect(px, py, pw, ph, Math.min(16, ph * 0.03)).fill(0x1b2744);
+
+        talentTitle.style.fontSize = Math.round(0.05 * h);
+        talentTitle.x = px + pw / 2;
+        talentTitle.y = py + ph * 0.07;
+
+        talentPointsText.style.fontSize = Math.round(0.03 * h);
+        talentPointsText.x = px + pw / 2;
+        talentPointsText.y = py + ph * 0.16;
+
+        const cbs = Math.min(30, Math.round(0.045 * h));
+        talentCloseRect = { x: px + pw - cbs - 8, y: py + 8, w: cbs, h: cbs };
+        talentCloseBtn.clear()
+            .roundRect(talentCloseRect.x, talentCloseRect.y, talentCloseRect.w, talentCloseRect.h,
+                       Math.min(8, talentCloseRect.h * 0.3))
+            .fill(0x2a3d6b);
+        talentCloseBtnText.style.fontSize = Math.round(cbs * 0.6);
+        talentCloseBtnText.x = talentCloseRect.x + talentCloseRect.w / 2;
+        talentCloseBtnText.y = talentCloseRect.y + talentCloseRect.h / 2;
+
+        // Three icons in a row across the middle of the panel.
+        const isize = Math.min(pw * 0.20, ph * 0.22);
+        const gap = Math.round(pw * 0.06);
+        const total = isize * 3 + gap * 2;
+        const startX = px + (pw - total) / 2 + isize / 2;
+        const iconY = py + ph * 0.30;
+        for (let slot = 0; slot < 3; slot++) {
+            const t = talentIcons[slot];
+            const cx = startX + slot * (isize + gap);
+            t.rect = { x: cx - isize / 2, y: iconY - isize / 2, w: isize, h: isize };
+            t.icon.x = cx;
+            t.icon.y = iconY;
+            t.icon.width = isize * 0.8;
+            t.icon.height = isize * 0.8;
+            t.label.style.fontSize = Math.round(0.026 * h);
+            t.label.x = cx;
+            t.label.y = iconY + isize / 2 + Math.round(0.008 * h);
+        }
+
+        talentDescText.anchor.set(0, 0);
+        talentDescText.style.fontSize = Math.max(12, Math.round(0.03 * h));
+        talentDescText.x = px + pw * 0.12;
+        talentDescText.y = py + ph * 0.56;
+
+        const bw = Math.min(pw * 0.4, 200);
+        const bh = Math.round(ph * 0.09);
+        talentUpgradeRect = { x: px + pw / 2 - bw / 2, y: py + ph - bh - ph * 0.06, w: bw, h: bh };
+        talentUpgradeBtn.clear()
+            .roundRect(talentUpgradeRect.x, talentUpgradeRect.y, talentUpgradeRect.w, talentUpgradeRect.h,
+                       Math.min(12, talentUpgradeRect.h * 0.3))
+            .fill(0xe94560);
+        talentUpgradeBtnText.style.fontSize = Math.round(0.034 * h);
+        talentUpgradeBtnText.x = talentUpgradeRect.x + talentUpgradeRect.w / 2;
+        talentUpgradeBtnText.y = talentUpgradeRect.y + talentUpgradeRect.h / 2;
+
+        paintTalents();
+    }
+
+    // The icon backgrounds, with the selection ring on the chosen talent. The
+    // textures and level labels are renderTalents()'s job.
+    function paintTalents() {
+        for (let slot = 0; slot < 3; slot++) {
+            const t = talentIcons[slot];
+            if (!t.rect) continue;
+            const s = t.rect.w;
+            const selected = slot === talentSelected;
+            t.bg.clear()
+                .roundRect(t.rect.x, t.rect.y, s, s, Math.min(10, s * 0.15))
+                .fill(0x0d1526)
+                .stroke({
+                    width: selected ? Math.max(3, s * 0.07) : 2,
+                    color: selected ? SELECT_COLOR : 0x2a3d6b,
+                    alpha: 0.9,
+                });
+        }
+    }
+
+    function renderTalents() {
+        const info = classList.find((c) => c.class === myCls);
+        talentTitle.text = 'Таланты' + (info ? ' — ' + (CLASS_RU[info.class] || info.class) : '');
+        talentPointsText.text = 'Очки талантов: ' + myTalentPoints;
+
+        for (let slot = 0; slot < 3; slot++) {
+            const t = talentIcons[slot];
+            t.icon.texture = (myCls && passiveTextures[myCls] && passiveTextures[myCls][slot])
+                || PIXI.Texture.WHITE;
+            t.icon.visible = !!myCls;
+            t.label.text = (myTalents[slot] || 0) + '/3';
+        }
+
+        const level = talentSelected >= 0 ? (myTalents[talentSelected] || 0) : 0;
+        talentDescText.text = myCls
+            ? talentDescription(myCls, talentSelected, level)
+            : 'сначала выбери класс';
+
+        const allowed = talentUpgradeAllowed(talentSelected);
+        talentUpgradeBtn.alpha = allowed ? 1 : 0.4;
+        talentUpgradeBtnText.alpha = allowed ? 1 : 0.4;
+
+        paintTalents();
+    }
+
+    function openTalents() {
+        if (!myCls) { setLobbyMsg('сначала выбери класс'); return; }
+        overlay = 'talents';
+        talentSelected = 0;
+        renderTalents();
+        talentScene.visible = true;
+    }
+
+    function closeTalents() {
+        overlay = null;
+        talentScene.visible = false;
+        paintLobby();
+    }
+
+    function applyTalentResult(data) {
+        if (data.ok) {
+            myLevel = Number.isInteger(data.level) ? data.level : myLevel;
+            myXp = Number.isInteger(data.xp) ? data.xp : myXp;
+            myTalentPoints = Number.isInteger(data.talentPoints) ? data.talentPoints : myTalentPoints;
+            if (Array.isArray(data.talents)) {
+                myTalents = data.talents.map((n) => Number(n) || 0).slice(0, 3);
+            }
+            if (overlay === 'talents') renderTalents();
+        } else {
+            talentDescText.text = {
+                'no-points': 'нет очков талантов',
+                'too-low': 'нужен уровень ' + (2 * ((myTalents[talentSelected] || 0) + 1)),
+                maxed: 'талант уже на максимуме',
+                'no-auth': 'войди, чтобы играть',
+                'in-room': 'таланты меняются только в лобби',
+                'bad-class': 'сначала выбери класс',
+                'bad-request': 'сервер не понял запрос',
+            }[data.reason] || 'не получилось';
+        }
+    }
+
+    function applyProgress(data) {
+        myLevel = Number.isInteger(data.level) ? data.level : myLevel;
+        myXp = Number.isInteger(data.xp) ? data.xp : myXp;
+        myTalentPoints = Number.isInteger(data.talentPoints) ? data.talentPoints : myTalentPoints;
+        if (Array.isArray(data.talents)) {
+            myTalents = data.talents.map((n) => Number(n) || 0).slice(0, 3);
+        }
+        // The inventory/talent overlay is lobby-only, so this usually lands while
+        // the board is showing; re-render anyway in case either is somehow open.
+        if (overlay === 'inventory') renderInventory();
+        if (overlay === 'talents') renderTalents();
     }
 
     function invHit(x, y) {
@@ -1666,6 +2061,12 @@ import { createNetwork } from './network.js';
         }
         else if (data.action === 'restart_result') {
             applyRestartResult(data);
+        }
+        else if (data.action === 'progress') {
+            applyProgress(data);
+        }
+        else if (data.action === 'talent_result') {
+            applyTalentResult(data);
         }
         else if (data.action === 'reset_result') {
             applyResetResult(data);
@@ -1891,6 +2292,27 @@ import { createNetwork } from './network.js';
             return;
         }
 
+        if (overlay === 'talents') {
+            if (inRect(x, y, talentCloseRect)) {
+                closeTalents();
+                return;
+            }
+            if (inRect(x, y, talentUpgradeRect)) {
+                if (talentUpgradeAllowed(talentSelected)) {
+                    net.send({ action: 'set_talent', talent: talentSelected });
+                }
+                return;
+            }
+            for (let slot = 0; slot < 3; slot++) {
+                if (inRect(x, y, talentIcons[slot].rect)) {
+                    talentSelected = slot;
+                    renderTalents();
+                    return;
+                }
+            }
+            return;
+        }
+
         if (screen === 'lobby') {
             const createMode = createHit(x, y);
             if (createMode) {
@@ -1906,6 +2328,11 @@ import { createNetwork } from './network.js';
 
             if (inRect(x, y, invBtnRect)) {
                 openInventory();
+                return;
+            }
+
+            if (talentHit(x, y)) {
+                openTalents();
                 return;
             }
 
