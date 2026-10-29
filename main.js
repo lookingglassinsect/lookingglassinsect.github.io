@@ -94,6 +94,54 @@ import { createNetwork } from './network.js';
     });
     orderHint.anchor.set(0.5, 0.5);
 
+    // Two scenes over one canvas: the lobby and the board. Only one is visible
+    // at a time, so the lobby is drawn with the same toolkit and palette as the
+    // board instead of being an HTML layer that never quite matches it.
+    const boardScene = new PIXI.Container();
+    const lobbyScene = new PIXI.Container();
+
+    const lobbyTitle = new PIXI.Text({
+        text: 'ЛОББИ',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    lobbyTitle.anchor.set(0.5, 0);
+
+    const titleUnderline = new PIXI.Graphics();
+
+    const createBtn = new PIXI.Graphics();
+    const createBtnText = new PIXI.Text({
+        text: 'Создать комнату',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    createBtnText.anchor.set(0.5, 0.5);
+
+    const lobbyMsg = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    lobbyMsg.anchor.set(0.5, 0.5);
+
+    const lobbyCards = new PIXI.Container();
+
+    // The button that takes a player back out of a room, part of the board scene.
+    const leaveBtn = new PIXI.Graphics();
+    const leaveBtnText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    leaveBtnText.anchor.set(0.5, 0.5);
+
+    // Hit-test rectangles, filled by layoutLobby()/renderLobby() and read by the
+    // tap layer. They are plain data for the same reason the board routes taps
+    // through arithmetic rather than per-shape handlers.
+    let createRect = null;
+    let leaveRect = null;
+    let cardRects = [];
+    let cardObjects = [];
+    let canCreate = true;
+    let hoverCreate = false;
+    let hoverCard = -1;
+
     // Side of one square, in screen pixels. drawCell() needs it, and layout()
     // recomputes it on every resize.
     let sqX = 0;
@@ -228,11 +276,54 @@ import { createNetwork } from './network.js';
         statusText.style.fontSize = Math.round(0.055 * h);
         statusText.x = 0.62 * w;
         statusText.y = 0.9 * h;
+
+        layoutLobby();
+
+        // A resize also re-lays the cards; they are positioned from the screen,
+        // not from a stored size, so they have to be rebuilt at the new size.
+        if (screen === 'lobby' && lastLobby) {
+            renderLobby(lastLobby.rooms, lastLobby.max);
+        }
     }
 
-    app.stage.addChild(rect);
-    app.stage.addChild(panel1);
-    app.stage.addChild(panel2);
+    // Positions the lobby scene. Called from layout() on every resize, and its
+    // card slots are recomputed in renderLobby() from the current screen.
+    function layoutLobby() {
+        const w = app.screen.width;
+        const h = app.screen.height;
+
+        lobbyTitle.style.fontSize = Math.round(0.075 * h);
+        lobbyTitle.x = 0.5 * w;
+        lobbyTitle.y = 0.10 * h;
+        titleUnderline.clear()
+            .rect(0.5 * w - 0.09 * w, 0.10 * h + lobbyTitle.height + 0.015 * h,
+                  0.18 * w, Math.max(2, Math.round(0.008 * h)))
+            .fill(0xe94560);
+
+        const bw = Math.min(0.5 * w, 380);
+        const bh = Math.round(0.09 * h);
+        createRect = { x: (w - bw) / 2, y: 0.24 * h, w: bw, h: bh };
+        createBtnText.style.fontSize = Math.round(0.035 * h);
+        createBtnText.x = 0.5 * w;
+        createBtnText.y = 0.24 * h + bh / 2;
+
+        lobbyMsg.style.fontSize = Math.round(0.028 * h);
+        lobbyMsg.x = 0.5 * w;
+        lobbyMsg.y = 0.24 * h + bh + 0.022 * h;
+
+        const lw = Math.round(0.16 * w);
+        const lh = Math.round(0.06 * h);
+        leaveRect = { x: 0.02 * w, y: 0.02 * h, w: lw, h: lh };
+        leaveBtnText.style.fontSize = Math.round(0.026 * h);
+        leaveBtnText.x = 0.02 * w + lw / 2;
+        leaveBtnText.y = 0.02 * h + lh / 2;
+
+        paintLobby();
+    }
+
+    boardScene.addChild(rect);
+    boardScene.addChild(panel1);
+    boardScene.addChild(panel2);
 
     // A cell is also the board's only control, but the handlers live on the tap
     // layer above, not on the tiles: see tapLayer.
@@ -241,33 +332,72 @@ import { createNetwork } from './network.js';
             for (let i = 0; i < 5; i++) {
                 const square = new PIXI.Graphics();
                 squareSets[side][j][i] = square;
-                app.stage.addChild(square);
+                boardScene.addChild(square);
             }
         }
     }
 
     // Above the squares: a shot is drawn between two of them, and under it the
     // dotted line that shows which unit is under orders and against whom.
-    app.stage.addChild(ordersGfx);
-    app.stage.addChild(shotsGfx);
-    app.stage.addChild(statusText);
-    app.stage.addChild(hintText);
-    app.stage.addChild(orderHint);
+    boardScene.addChild(ordersGfx);
+    boardScene.addChild(shotsGfx);
+    boardScene.addChild(statusText);
+    boardScene.addChild(hintText);
+    boardScene.addChild(orderHint);
+    boardScene.addChild(circle);
+    boardScene.addChild(leaveBtn);
+    boardScene.addChild(leaveBtnText);
+
+    lobbyScene.addChild(lobbyTitle);
+    lobbyScene.addChild(titleUnderline);
+    lobbyScene.addChild(createBtn);
+    lobbyScene.addChild(createBtnText);
+    lobbyScene.addChild(lobbyMsg);
+    lobbyScene.addChild(lobbyCards);
+
+    app.stage.addChild(boardScene);
+    app.stage.addChild(lobbyScene);
     app.stage.addChild(tapLayer);
+
+    boardScene.visible = false;
+    lobbyScene.visible = true;
 
     tapLayer.on('pointerdown', onTap);
     // A hint that something is clickable, from the same arithmetic as the tap.
     tapLayer.on('pointermove', (e) => {
-        const over = overCircle(e.global.x, e.global.y) || cellAt(e.global.x, e.global.y);
+        const x = e.global.x;
+        const y = e.global.y;
+        let over = false;
+
+        if (screen === 'lobby') {
+            const nc = createHit(x, y);
+            const ni = cardHit(x, y);
+            if (nc !== hoverCreate || ni !== hoverCard) {
+                hoverCreate = nc;
+                hoverCard = ni;
+                paintLobby();
+            }
+            over = nc || ni >= 0;
+        } else {
+            over = leaveHit(x, y) || overCircle(x, y) || cellAt(x, y);
+        }
+
         app.canvas.style.cursor = over ? 'pointer' : 'default';
     });
-
-    app.stage.addChild(circle);
 
     // Highest sequence number shown so far. Broadcasts are not ordered — two
     // threads can deliver snapshots in the opposite order — so anything not
     // newer than this is a state the board has already moved past.
     let lastSeq = 0;
+
+    // Which scene the page shows, and which room it is inside. roomId 0 means
+    // the lobby; boardScene and lobbyScene swap visibility to match.
+    let screen = 'lobby';
+    let roomId = 0;
+
+    // The last lobby list shown, kept so a resize can re-render the cards at the
+    // new size without asking the server again.
+    let lastLobby = null;
 
     // Our own copy of the battle clock, in milliseconds since the battle began.
     // It runs every frame, so a shot can be drawn between two snapshots instead
@@ -303,10 +433,193 @@ import { createNetwork } from './network.js';
     const net = createNetwork(
         'wss://clickerbase.ru:9000',
         handleServerMessage,
-        // A restarted server counts from 1 again. Without this reset the board
-        // would ignore everything it sent after the restart.
-        () => { lastSeq = 0; },
+        // A restarted server counts from 1 again, and a room membership lives in
+        // the connection, not in the server. On every open the client forgets the
+        // board and, if it was in a room, asks to be let back in — a dropped
+        // socket must not strand the player in a dead room.
+        () => {
+            lastSeq = 0;
+            battleT = 0;
+            selected = 0;
+            if (screen === 'room' && roomId) net.send({ action: 'join_room', roomId });
+        },
     );
+
+    // --- lobby / rooms -----------------------------------------------------
+    function plural(n, one, few, many) {
+        const m10 = n % 10;
+        const m100 = n % 100;
+        if (m10 === 1 && m100 !== 11) return one;
+        if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+        return many;
+    }
+
+    function statusLabel(status) {
+        return status === 'running' ? 'бой идёт' : 'бой окончен';
+    }
+
+    function inRect(x, y, r) {
+        return r && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    }
+
+    function createHit(x, y) { return canCreate && inRect(x, y, createRect); }
+    function leaveHit(x, y) { return inRect(x, y, leaveRect); }
+    function cardHit(x, y) {
+        for (let i = 0; i < cardRects.length; i++) {
+            if (inRect(x, y, cardRects[i])) return i;
+        }
+        return -1;
+    }
+
+    function setLobbyMsg(text) {
+        lobbyMsg.text = text;
+    }
+
+    // Repaints the hover-sensitive fills: the create button, the leave button
+    // and every card. Called on hover changes and after a re-render, never from
+    // the ticker — a background tab must not depend on a frame to look right.
+    function paintLobby() {
+        if (createRect) {
+            const color = canCreate ? (hoverCreate ? 0xff5d78 : 0xe94560) : 0x6b2b3e;
+            createBtn.clear()
+                .roundRect(createRect.x, createRect.y, createRect.w, createRect.h,
+                           Math.min(14, createRect.h * 0.3))
+                .fill(color);
+            createBtnText.alpha = canCreate ? 1 : 0.5;
+        }
+
+        if (leaveRect) {
+            leaveBtn.clear()
+                .roundRect(leaveRect.x, leaveRect.y, leaveRect.w, leaveRect.h,
+                           Math.min(10, leaveRect.h * 0.3))
+                .fill(0xe94560);
+        }
+
+        for (let i = 0; i < cardObjects.length; i++) {
+            const r = cardRects[i];
+            cardObjects[i].g.clear()
+                .roundRect(r.x, r.y, r.w, r.h, Math.min(10, r.h * 0.3))
+                .fill(hoverCard === i ? 0xff5d78 : 0xe94560);
+        }
+    }
+
+    function renderLobby(rooms, max) {
+        lastLobby = { rooms, max };
+
+        lobbyCards.removeChildren().forEach((c) => c.destroy(true));
+        cardObjects = [];
+        cardRects = [];
+        hoverCard = -1;
+
+        const w = app.screen.width;
+        const h = app.screen.height;
+
+        if (!rooms.length) {
+            const empty = new PIXI.Text({
+                text: 'комнат пока нет — создай первую',
+                style: { fontFamily: 'monospace', fill: 0xffffff, fontSize: Math.round(0.03 * h) },
+            });
+            empty.anchor.set(0.5, 0.5);
+            empty.x = 0.5 * w;
+            empty.y = 0.62 * h;
+            lobbyCards.addChild(empty);
+            canCreate = true;
+            paintLobby();
+            return;
+        }
+
+        const cardW = Math.min(0.62 * w, 520);
+        const gap = Math.round(0.014 * h);
+        const listTop = 0.42 * h;
+        const listBottom = 0.95 * h;
+        const count = rooms.length;
+        const cardH = Math.min(Math.round(0.055 * h),
+                              Math.floor((listBottom - listTop - gap * (count - 1)) / count));
+        const x = (w - cardW) / 2;
+        let y = listTop;
+
+        for (const room of rooms) {
+            const g = new PIXI.Graphics();
+            const name = new PIXI.Text({
+                text: room.name,
+                style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold', fontSize: Math.round(0.034 * h) },
+            });
+            name.anchor.set(0, 0.5);
+            const meta = new PIXI.Text({
+                text: statusLabel(room.status) + ' · '
+                    + room.players + ' ' + plural(room.players, 'игрок', 'игрока', 'игроков'),
+                style: { fontFamily: 'monospace', fill: 0xffffff, fontSize: Math.round(0.028 * h) },
+            });
+            meta.anchor.set(1, 0.5);
+            meta.alpha = 0.85;
+
+            name.x = x + cardW * 0.05;
+            name.y = y + cardH / 2;
+            meta.x = x + cardW * 0.95;
+            meta.y = y + cardH / 2;
+
+            lobbyCards.addChild(g, name, meta);
+            cardObjects.push({ g, name, meta });
+            cardRects.push({ x, y, w: cardW, h: cardH, id: room.id });
+
+            y += cardH + gap;
+        }
+
+        canCreate = rooms.length < max;
+        paintLobby();
+    }
+
+    function clearBoardState() {
+        lastSeq = 0;
+        battleT = 0;
+        selected = 0;
+        shots = [];
+        orders = [];
+        yours = null;
+        running = false;
+        unitsById.clear();
+        for (const column of leftT) column.fill(null);
+        for (const column of rightT) column.fill(null);
+        shotsGfx.clear();
+        ordersGfx.clear();
+    }
+
+    function showLobby() {
+        screen = 'lobby';
+        roomId = 0;
+        clearBoardState();
+        statusText.text = '';
+        boardScene.visible = false;
+        lobbyScene.visible = true;
+        redrawBoard();
+        updateOrderHint();
+    }
+
+    function enterRoom(id) {
+        screen = 'room';
+        roomId = id;
+        clearBoardState();
+        leaveBtnText.text = '← Комната ' + id;
+        boardScene.visible = true;
+        lobbyScene.visible = false;
+        redrawBoard();
+        updateOrderHint();
+    }
+
+    function applyRoomResult(data) {
+        if (data.ok && data.roomId) {
+            enterRoom(data.roomId);
+            return;
+        }
+
+        // A refused join/create lands back in the lobby with the reason as text.
+        showLobby();
+        setLobbyMsg({
+            full: 'все 10 комнат заняты — попробуй позже',
+            'no-room': 'эта комната уже исчезла',
+            'bad-request': 'сервер не понял запрос',
+        }[data.reason] || 'не получилось войти');
+    }
 
     function handleServerMessage(data) {
         console.log('Сервер прислал:', data);
@@ -317,6 +630,15 @@ import { createNetwork } from './network.js';
         else if (data.action === 'order_result') {
             applyOrderResult(data);
         }
+        else if (data.action === 'lobby') {
+            // The server sends this only to lobby clients, so its arrival is
+            // itself the "you are in the lobby" signal.
+            renderLobby(data.rooms || [], data.max);
+            showLobby();
+        }
+        else if (data.action === 'room_result') {
+            applyRoomResult(data);
+        }
         else if (data.action === 'state') {
             // The older server (the binary kept as server.prev) still sends the
             // plain 0/1 board. Kept so a rollback does not blank the page; it
@@ -326,6 +648,10 @@ import { createNetwork } from './network.js';
     }
 
     function applyBattle(data) {
+        // Battle frames belong to a room; a frame that straggles in after
+        // leaving must not repaint the (hidden) board or advance the clock.
+        if (screen !== 'room') return;
+
         if (typeof data.seq === 'number') {
             if (data.seq <= lastSeq) {
                 console.log('Ignoring stale state, seq', data.seq, '<=', lastSeq);
@@ -436,10 +762,33 @@ import { createNetwork } from './network.js';
         return dx * dx + dy * dy <= r * r;
     }
 
-    // Everything the board responds to starts here.
+    // Everything the page responds to starts here: the lobby when it is shown,
+    // the board when a room is open.
     function onTap(e) {
         const x = e.global.x;
         const y = e.global.y;
+
+        if (screen === 'lobby') {
+            if (createHit(x, y)) {
+                setLobbyMsg('создаём…');
+                net.send({ action: 'create_room' });
+                return;
+            }
+
+            const card = cardHit(x, y);
+            if (card >= 0) {
+                net.send({ action: 'join_room', roomId: cardRects[card].id });
+                return;
+            }
+            return;
+        }
+
+        // In a room: the back button first, then the board's own controls.
+        if (leaveHit(x, y)) {
+            net.send({ action: 'leave_room' });
+            showLobby();
+            return;
+        }
 
         if (overCircle(x, y)) {
             console.log('Круг нажат!');
