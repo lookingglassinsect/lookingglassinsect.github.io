@@ -60,11 +60,22 @@ import { createNetwork } from './network.js';
     const EMPTY_COLOR = 0x1b2744;
     const SELECT_COLOR = 0xffe680;
 
-    // The two units the player commands are the same side in a paler blue: the
-    // ally's three keep the normal one. The whole mark is the colour of the
+    // The one unit the player commands is the same side in a paler blue: the
+    // ally's four keep the normal one. The whole mark is the colour of the
     // tile, because a bar or a badge would fight for room with the role glyph
     // and the health bar that already sit there.
     const MINE_COLOR = 0x62b0f0;
+
+    // Russian names for the class picker title. The assets and the wire keep
+    // the English ids; this is display-only.
+    const CLASS_RU = {
+        knight: 'Рыцарь',
+        berserker: 'Берсерк',
+        assassin: 'Ассасин',
+        healer: 'Целитель',
+        mage: 'Маг',
+        archer: 'Лучник',
+    };
 
     // Everything below is created once and positioned by layout(). Nothing keeps
     // a position or a size that was computed at startup, because that is what
@@ -145,6 +156,47 @@ import { createNetwork } from './network.js';
     });
     leaveBtnText.anchor.set(0.5, 0.5);
 
+    // The character overlay: one scene that shows either the class picker (a
+    // fresh account has no class yet) or the character page (opened from the
+    // lobby's top-right button). Both are Pixi, drawn above the lobby, and
+    // routed through the same tapLayer as everything else.
+    const charScene = new PIXI.Container();
+    const charBackdrop = new PIXI.Graphics();
+    const charPanel = new PIXI.Graphics();
+    const charTitle = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    charTitle.anchor.set(0.5, 0.5);
+    const charSprite = new PIXI.Sprite();
+    charSprite.anchor.set(0.5);
+    const charStats = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    const arrowLeft = new PIXI.Graphics();
+    const arrowRight = new PIXI.Graphics();
+    const charActionBtn = new PIXI.Graphics();
+    const charActionBtnText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    charActionBtnText.anchor.set(0.5, 0.5);
+    const charCloseBtn = new PIXI.Graphics();
+    const charCloseBtnText = new PIXI.Text({
+        text: '✕',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    charCloseBtnText.anchor.set(0.5, 0.5);
+
+    // The lobby's button into the character page, top-right.
+    const charBtn = new PIXI.Graphics();
+    const charBtnText = new PIXI.Text({
+        text: 'персонаж',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    charBtnText.anchor.set(0.5, 0.5);
+
     // Hit-test rectangles, filled by layoutLobby()/renderLobby() and read by the
     // tap layer. They are plain data for the same reason the board routes taps
     // through arithmetic rather than per-shape handlers.
@@ -155,6 +207,17 @@ import { createNetwork } from './network.js';
     let canCreate = true;
     let hoverCreate = false;
     let hoverCard = -1;
+
+    // Character overlay hit-test rectangles, filled by layoutCharScene()/
+    // layoutLobby() and read by the tap layer.
+    let charPanelRect = null;
+    let arrowLeftRect = null;
+    let arrowRightRect = null;
+    let actionBtnRect = null;
+    let closeBtnRect = null;
+    let charBtnRect = null;
+    let hoverCharBtn = false;
+    let charSpriteSize = 0;
 
     // Side of one square, in screen pixels. drawCell() needs it, and layout()
     // recomputes it on every resize.
@@ -321,12 +384,18 @@ import { createNetwork } from './network.js';
         statusText.y = 0.9 * h;
 
         layoutLobby();
+        layoutCharScene();
 
         // A resize also re-lays the cards; they are positioned from the screen,
         // not from a stored size, so they have to be rebuilt at the new size.
         if (screen === 'lobby' && lastLobby) {
             renderLobby(lastLobby.rooms, lastLobby.max);
         }
+
+        // The overlay is laid from the screen too; re-render whichever mode is
+        // showing so a resize does not drop its text or textures.
+        if (overlay === 'select') renderCharSelect();
+        else if (overlay === 'profile') renderCharProfile();
     }
 
     // Positions the lobby scene. Called from layout() on every resize, and its
@@ -360,6 +429,13 @@ import { createNetwork } from './network.js';
         leaveBtnText.style.fontSize = Math.round(0.026 * h);
         leaveBtnText.x = 0.02 * w + lw / 2;
         leaveBtnText.y = 0.02 * h + lh / 2;
+
+        const cbw = Math.round(0.15 * w);
+        const cbh = Math.round(0.06 * h);
+        charBtnRect = { x: w - cbw - 0.02 * w, y: 0.02 * h, w: cbw, h: cbh };
+        charBtnText.style.fontSize = Math.round(0.026 * h);
+        charBtnText.x = charBtnRect.x + cbw / 2;
+        charBtnText.y = charBtnRect.y + cbh / 2;
 
         paintLobby();
     }
@@ -397,14 +473,22 @@ import { createNetwork } from './network.js';
     lobbyScene.addChild(createBtnText);
     lobbyScene.addChild(lobbyMsg);
     lobbyScene.addChild(lobbyCards);
+    lobbyScene.addChild(charBtn);
+    lobbyScene.addChild(charBtnText);
+
+    charScene.addChild(charBackdrop, charPanel, charTitle, charSprite, charStats,
+                       arrowLeft, arrowRight, charActionBtn, charActionBtnText,
+                       charCloseBtn, charCloseBtnText);
 
     app.stage.addChild(boardScene);
     app.stage.addChild(lobbyScene);
+    app.stage.addChild(charScene);
     app.stage.addChild(tapLayer);
 
     // The login form covers both scenes until the player is authenticated.
     boardScene.visible = false;
     lobbyScene.visible = false;
+    charScene.visible = false;
 
     tapLayer.on('pointerdown', onTap);
     // A hint that something is clickable, from the same arithmetic as the tap.
@@ -413,15 +497,22 @@ import { createNetwork } from './network.js';
         const y = e.global.y;
         let over = false;
 
-        if (screen === 'lobby') {
+        if (overlay === 'select') {
+            over = inRect(x, y, arrowLeftRect) || inRect(x, y, arrowRightRect)
+                || inRect(x, y, actionBtnRect);
+        } else if (overlay === 'profile') {
+            over = inRect(x, y, actionBtnRect) || inRect(x, y, closeBtnRect);
+        } else if (screen === 'lobby') {
             const nc = createHit(x, y);
             const ni = cardHit(x, y);
-            if (nc !== hoverCreate || ni !== hoverCard) {
+            const ch = charHit(x, y);
+            if (nc !== hoverCreate || ni !== hoverCard || ch !== hoverCharBtn) {
                 hoverCreate = nc;
                 hoverCard = ni;
+                hoverCharBtn = ch;
                 paintLobby();
             }
-            over = nc || ni >= 0;
+            over = nc || ni >= 0 || ch;
         } else {
             over = leaveHit(x, y) || overCircle(x, y) || cellAt(x, y);
         }
@@ -449,6 +540,13 @@ import { createNetwork } from './network.js';
     // The last lobby list shown, kept so a resize can re-render the cards at the
     // new size without asking the server again.
     let lastLobby = null;
+
+    // The player's chosen class ('' until they pick one), the six classes the
+    // server described, and which of them the picker is currently showing.
+    let myCls = '';
+    let classList = [];
+    let overlay = null;      // null | 'select' | 'profile'
+    let charIndex = 0;
 
     // Our own copy of the battle clock, in milliseconds since the battle began.
     // It runs every frame, so a shot can be drawn between two snapshots instead
@@ -540,6 +638,8 @@ import { createNetwork } from './network.js';
             localStorage.setItem('fen_token', data.token);
             localStorage.setItem('fen_name', data.name);
             myName = data.name;
+            myCls = data.cls || '';
+            if (Array.isArray(data.classes)) classList = data.classes;
             setLoginMsg('');
 
             if (screen === 'room' && roomId) {
@@ -547,6 +647,9 @@ import { createNetwork } from './network.js';
                 net.send({ action: 'join_room', roomId });
             } else {
                 showLobby();
+                // A fresh account has not picked a class yet; the picker opens
+                // on top of the lobby and stays until one is chosen.
+                if (!myCls) openCharSelect();
             }
         } else {
             showLogin();
@@ -586,6 +689,8 @@ import { createNetwork } from './network.js';
         return -1;
     }
 
+    function charHit(x, y) { return inRect(x, y, charBtnRect); }
+
     function setLobbyMsg(text) {
         lobbyMsg.text = text;
     }
@@ -608,6 +713,13 @@ import { createNetwork } from './network.js';
                 .roundRect(leaveRect.x, leaveRect.y, leaveRect.w, leaveRect.h,
                            Math.min(10, leaveRect.h * 0.3))
                 .fill(0xe94560);
+        }
+
+        if (charBtnRect) {
+            charBtn.clear()
+                .roundRect(charBtnRect.x, charBtnRect.y, charBtnRect.w, charBtnRect.h,
+                           Math.min(10, charBtnRect.h * 0.3))
+                .fill(hoverCharBtn ? 0xff5d78 : 0xe94560);
         }
 
         for (let i = 0; i < cardObjects.length; i++) {
@@ -684,6 +796,163 @@ import { createNetwork } from './network.js';
         paintLobby();
     }
 
+    // --- character picker / page -------------------------------------------
+    function statsText(info) {
+        const sec = info.delayMs / 1000;
+        const secStr = Number.isInteger(sec) ? String(sec) : sec.toFixed(1).replace('.', ',');
+        return [
+            'Здоровье: ' + info.hp,
+            'Урон: ' + info.damage,
+            'Скорость атаки: каждые ' + secStr + ' с',
+            'Броня: ' + info.armor,
+            'Крит: ' + info.critChance + '% · ×' + ((100 + info.critMult) / 100),
+            'Уклонение: ' + info.dodge + '%',
+            'Тип урона: ' + (info.dmgType === 'magical' ? 'магический' : 'физический'),
+        ].join('\n');
+    }
+
+    function classSprite(info) {
+        return info && classTextures[info.class] ? classTextures[info.class] : PIXI.Texture.WHITE;
+    }
+
+    function drawArrowButton(g, rect, dir) {
+        g.clear();
+        g.roundRect(rect.x, rect.y, rect.w, rect.h, Math.min(10, rect.h * 0.3)).fill(0x2a3d6b);
+        const cx = rect.x + rect.w / 2;
+        const cy = rect.y + rect.h / 2;
+        const s = rect.w * 0.26;
+        g.poly(dir < 0
+            ? [cx + s, cy - s, cx - s, cy, cx + s, cy + s]
+            : [cx - s, cy - s, cx + s, cy, cx - s, cy + s]).fill(0xffffff);
+    }
+
+    // Positions the overlay panel and its controls; called on every resize like
+    // layout(). Only geometry lives here — the text and textures are set by the
+    // render functions below.
+    function layoutCharScene() {
+        const w = app.screen.width;
+        const h = app.screen.height;
+
+        charBackdrop.clear().rect(0, 0, w, h).fill({ color: 0x0d1526, alpha: 0.72 });
+
+        const pw = Math.min(0.62 * w, 520);
+        const ph = Math.min(0.82 * h, 600);
+        const px = (w - pw) / 2;
+        const py = (h - ph) / 2;
+        charPanelRect = { x: px, y: py, w: pw, h: ph };
+
+        charPanel.clear().roundRect(px, py, pw, ph, Math.min(16, ph * 0.03)).fill(0x1b2744);
+
+        charTitle.style.fontSize = Math.round(0.05 * h);
+        charTitle.x = px + pw / 2;
+        charTitle.y = py + ph * 0.09;
+
+        const spriteSize = Math.min(ph * 0.26, pw * 0.42);
+        charSpriteSize = spriteSize;
+        charSprite.x = px + pw / 2;
+        charSprite.y = py + ph * 0.30;
+
+        charStats.style.fontSize = Math.max(12, Math.round(0.032 * h));
+        charStats.anchor.set(0, 0);
+        charStats.x = px + pw * 0.14;
+        charStats.y = py + ph * 0.52;
+
+        const arrowSize = Math.min(44, spriteSize * 0.55);
+        arrowLeftRect = {
+            x: charSprite.x - spriteSize / 2 - arrowSize - 14,
+            y: charSprite.y - arrowSize / 2, w: arrowSize, h: arrowSize,
+        };
+        arrowRightRect = {
+            x: charSprite.x + spriteSize / 2 + 14,
+            y: charSprite.y - arrowSize / 2, w: arrowSize, h: arrowSize,
+        };
+        drawArrowButton(arrowLeft, arrowLeftRect, -1);
+        drawArrowButton(arrowRight, arrowRightRect, 1);
+
+        const bw = Math.min(pw * 0.4, 200);
+        const bh = Math.round(ph * 0.09);
+        actionBtnRect = { x: px + pw / 2 - bw / 2, y: py + ph - bh - ph * 0.05, w: bw, h: bh };
+        charActionBtn.clear()
+            .roundRect(actionBtnRect.x, actionBtnRect.y, actionBtnRect.w, actionBtnRect.h,
+                       Math.min(12, actionBtnRect.h * 0.3))
+            .fill(0xe94560);
+        charActionBtnText.style.fontSize = Math.round(0.034 * h);
+        charActionBtnText.x = actionBtnRect.x + actionBtnRect.w / 2;
+        charActionBtnText.y = actionBtnRect.y + actionBtnRect.h / 2;
+
+        const cbs = Math.min(30, Math.round(0.045 * h));
+        closeBtnRect = { x: px + pw - cbs - 8, y: py + 8, w: cbs, h: cbs };
+        charCloseBtn.clear()
+            .roundRect(closeBtnRect.x, closeBtnRect.y, closeBtnRect.w, closeBtnRect.h,
+                       Math.min(8, closeBtnRect.h * 0.3))
+            .fill(0x2a3d6b);
+        charCloseBtnText.style.fontSize = Math.round(cbs * 0.6);
+        charCloseBtnText.x = closeBtnRect.x + closeBtnRect.w / 2;
+        charCloseBtnText.y = closeBtnRect.y + closeBtnRect.h / 2;
+    }
+
+    function renderCharSelect() {
+        const info = classList[charIndex];
+        charTitle.text = info ? (CLASS_RU[info.class] || info.class) : '';
+        charSprite.texture = classSprite(info);
+        charSprite.width = charSpriteSize;
+        charSprite.height = charSpriteSize;
+        charSprite.visible = true;
+        charStats.text = info ? statsText(info) : '';
+        charActionBtnText.text = 'выбрать';
+        charActionBtn.visible = charActionBtnText.visible = true;
+        arrowLeft.visible = arrowRight.visible = true;
+        charCloseBtn.visible = charCloseBtnText.visible = false;
+    }
+
+    function renderCharProfile() {
+        const info = classList.find((c) => c.class === myCls);
+        charTitle.text = 'Персонаж';
+        charSprite.texture = classSprite(info);
+        charSprite.width = charSpriteSize;
+        charSprite.height = charSpriteSize;
+        charSprite.visible = true;
+        charStats.text = info ? statsText(info) : 'класс не выбран';
+        charActionBtnText.text = 'restart';
+        charActionBtn.visible = charActionBtnText.visible = true;
+        arrowLeft.visible = arrowRight.visible = false;
+        charCloseBtn.visible = charCloseBtnText.visible = true;
+    }
+
+    function openCharSelect() {
+        overlay = 'select';
+        if (charIndex < 0 || charIndex >= classList.length) charIndex = 0;
+        renderCharSelect();
+        charScene.visible = true;
+    }
+
+    function openCharProfile() {
+        overlay = 'profile';
+        renderCharProfile();
+        charScene.visible = true;
+    }
+
+    function closeCharOverlay() {
+        overlay = null;
+        charScene.visible = false;
+        paintLobby();
+    }
+
+    function confirmClass() {
+        const info = classList[charIndex];
+        if (info) net.send({ action: 'set_class', cls: info.class });
+    }
+
+    function applySetClassResult(data) {
+        if (data.ok) {
+            myCls = data.cls;
+            closeCharOverlay();
+            showLobby();
+        } else {
+            console.warn('set_class failed:', data.reason);
+        }
+    }
+
     function clearBoardState() {
         lastSeq = 0;
         battleT = 0;
@@ -755,6 +1024,9 @@ import { createNetwork } from './network.js';
         }
         else if (data.action === 'login_result') {
             applyLoginResult(data);
+        }
+        else if (data.action === 'set_class_result') {
+            applySetClassResult(data);
         }
         else if (data.action === 'lobby') {
             // An anonymous client is also in the lobby and gets this list; render
@@ -895,10 +1167,39 @@ import { createNetwork } from './network.js';
         const x = e.global.x;
         const y = e.global.y;
 
+        // The character overlay is modal on top of the lobby: while it is up,
+        // taps go to its controls and nowhere else.
+        if (overlay === 'select') {
+            if (inRect(x, y, arrowLeftRect)) {
+                charIndex = (charIndex + classList.length - 1) % classList.length;
+                renderCharSelect();
+            } else if (inRect(x, y, arrowRightRect)) {
+                charIndex = (charIndex + 1) % classList.length;
+                renderCharSelect();
+            } else if (inRect(x, y, actionBtnRect)) {
+                confirmClass();
+            }
+            return;
+        }
+
+        if (overlay === 'profile') {
+            if (inRect(x, y, actionBtnRect)) {
+                openCharSelect();
+            } else if (inRect(x, y, closeBtnRect)) {
+                closeCharOverlay();
+            }
+            return;
+        }
+
         if (screen === 'lobby') {
             if (createHit(x, y)) {
                 setLobbyMsg('создаём…');
                 net.send({ action: 'create_room' });
+                return;
+            }
+
+            if (charHit(x, y)) {
+                openCharProfile();
                 return;
             }
 
@@ -1121,7 +1422,7 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        setHint('светлые юниты — твои: тап по своему, потом по врагу');
+        setHint('светлый юнит — твой: тап по своему, потом по врагу');
     }
 
     app.ticker.add((ticker) => {
