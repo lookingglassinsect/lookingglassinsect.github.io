@@ -80,6 +80,23 @@ import { createNetwork } from './network.js';
 
         g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(SIDE_COLOR[side]);
 
+        // Role as a glyph rather than a different cell shape: the board is the
+        // same 2x5 as before, and a melee unit and a ranged one differ by what
+        // stands on the tile. A square is a melee unit, a diamond is a ranged
+        // one. The column already tells the player which line it is in.
+        const cx = sqX * 0.5;
+        const cy = sqX * 0.42;
+        const r = sqX * (unit.role === 'ranged' ? 0.17 : 0.15);
+
+        if (unit.role === 'ranged') {
+            g.poly([cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy])
+                .fill({ color: 0xffffff, alpha: 0.8 });
+        }
+        else {
+            g.rect(cx - r, cy - r, r * 2, r * 2)
+                .fill({ color: 0xffffff, alpha: 0.8 });
+        }
+
         // Health as a bar along the bottom: it is the only number on the board
         // for now, and a bar reads faster than a number would.
         const pad = sqX * 0.12;
