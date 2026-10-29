@@ -58,8 +58,8 @@ import { createNetwork } from './network.js';
 
     // A cell holds a unit or nothing. The server sends a flat list of units;
     // these two grids are that list laid out by cell, [side][col][row], where
-    // col 1 is the front line next to the middle of the board. Our side is
-    // always the left one.
+    // col 1 is the front line next to the middle of the board. Side 0 is the
+    // left, side 1 the right; which of them is ours depends on the room.
     const leftT = [
         [null, null, null, null, null],
         [null, null, null, null, null]
@@ -82,18 +82,19 @@ import { createNetwork } from './network.js';
     const grids = [leftT, rightT];
     const squareSets = [leftSquares, rightSquares];
 
-    // Our side is blue, the other one red, and a shot keeps the colour of the
-    // side it came from.
+    // Side 0 is blue and the left, side 1 red and the right, and a shot keeps
+    // the colour of the side it came from. In PvE the player commands the left;
+    // in PvP the guest commands the right, so "our side" is not always the left.
     const SIDE_COLOR = [0x3d7dd8, 0xd8503d];
     const TRAIL_COLOR = [0x4aa3ff, 0xff5a4a];
     const EMPTY_COLOR = 0x1b2744;
     const SELECT_COLOR = 0xffe680;
 
-    // The one unit the player commands is the same side in a paler blue: the
-    // ally's four keep the normal one. The whole mark is the colour of the
+    // The one unit the player commands is their own side in a paler shade: the
+    // allies' four keep the normal one. The whole mark is the colour of the
     // tile, because a bar or a badge would fight for room with the role glyph
     // and the health bar that already sit there.
-    const MINE_COLOR = 0x62b0f0;
+    const MINE_COLOR = [0x62b0f0, 0xe58a76];
 
     // Russian names for the class picker title. The assets and the wire keep
     // the English ids; this is display-only.
@@ -169,6 +170,15 @@ import { createNetwork } from './network.js';
     });
     statusText.anchor.set(0.5);
 
+    // The big 3-2-1 in the middle of the board during a PvP countdown. Hidden
+    // the rest of the time; layout() keeps its size and centre current.
+    const countdownText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    countdownText.anchor.set(0.5);
+    countdownText.visible = false;
+
     const hintText = new PIXI.Text({
         text: 'новый бой',
         style: { fontFamily: 'monospace', fill: 0xffffff },
@@ -198,12 +208,20 @@ import { createNetwork } from './network.js';
 
     const titleUnderline = new PIXI.Graphics();
 
-    const createBtn = new PIXI.Graphics();
-    const createBtnText = new PIXI.Text({
-        text: 'Создать комнату',
+    // Two ways to make a room: a PvE room (one player against bots) or a PvP
+    // room (two players, one per side, and everyone else watching).
+    const createPveBtn = new PIXI.Graphics();
+    const createPveBtnText = new PIXI.Text({
+        text: 'Создать PvE',
         style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
     });
-    createBtnText.anchor.set(0.5, 0.5);
+    createPveBtnText.anchor.set(0.5, 0.5);
+    const createPvpBtn = new PIXI.Graphics();
+    const createPvpBtnText = new PIXI.Text({
+        text: 'Создать PvP',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    createPvpBtnText.anchor.set(0.5, 0.5);
 
     const lobbyMsg = new PIXI.Text({
         text: '',
@@ -345,12 +363,13 @@ import { createNetwork } from './network.js';
     // Hit-test rectangles, filled by layoutLobby()/renderLobby() and read by the
     // tap layer. They are plain data for the same reason the board routes taps
     // through arithmetic rather than per-shape handlers.
-    let createRect = null;
+    let createPveRect = null;
+    let createPvpRect = null;
     let leaveRect = null;
     let cardRects = [];
     let cardObjects = [];
     let canCreate = true;
-    let hoverCreate = false;
+    let hoverCreate = null;   // null | 'pve' | 'pvp'
     let hoverCard = -1;
 
     // Character overlay hit-test rectangles, filled by layoutCharScene()/
@@ -408,11 +427,12 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        // A tile whose unit answers to the player is painted in the paler blue.
-        // Most of our line is an ally fighting on its own, and without the tint
-        // there is no way to tell which taps do anything until one is refused.
-        const mine = side === 0 && canCommand(unit);
-        g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(mine ? MINE_COLOR : SIDE_COLOR[side]);
+        // A tile whose unit answers to the player is painted in a paler shade of
+        // their side's colour. Most of our line is an ally fighting on its own,
+        // and without the tint there is no way to tell which taps do anything
+        // until one is refused.
+        const mine = side === mySide && canCommand(unit);
+        g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(mine ? MINE_COLOR[side] : SIDE_COLOR[side]);
 
         // A class is a skin: when its sprite is loaded, it fills the whole tile
         // in place of the role glyph. The glyph stays as the fallback for an
@@ -445,7 +465,7 @@ import { createNetwork } from './network.js';
 
         // The unit the player has picked to command, drawn on the overlay so the
         // ring stays visible on top of a full-tile sprite.
-        if (side === 0 && unit.id === selected) {
+        if (side === mySide && unit.id === selected) {
             const inset = Math.max(1.5, sqX * 0.05);
             g.overlay.roundRect(inset, inset, sqX - inset * 2, sqX - inset * 2, sqX * 0.05)
                 .stroke({ width: Math.max(2, sqX * 0.045), color: SELECT_COLOR, alpha: 0.95 });
@@ -560,6 +580,10 @@ import { createNetwork } from './network.js';
         statusText.x = 0.62 * w;
         statusText.y = 0.9 * h;
 
+        countdownText.style.fontSize = Math.round(0.2 * h);
+        countdownText.x = 0.5 * w;
+        countdownText.y = 0.5 * h;
+
         layoutLobby();
         layoutCharScene();
         layoutInventory();
@@ -591,12 +615,19 @@ import { createNetwork } from './network.js';
                   0.18 * w, Math.max(2, Math.round(0.008 * h)))
             .fill(0xe94560);
 
-        const bw = Math.min(0.5 * w, 380);
+        const bw = Math.min(0.24 * w, 190);
         const bh = Math.round(0.09 * h);
-        createRect = { x: (w - bw) / 2, y: 0.24 * h, w: bw, h: bh };
-        createBtnText.style.fontSize = Math.round(0.035 * h);
-        createBtnText.x = 0.5 * w;
-        createBtnText.y = 0.24 * h + bh / 2;
+        const bgap = Math.round(0.02 * w);
+        const total = bw * 2 + bgap;
+        const bx = (w - total) / 2;
+        createPveRect = { x: bx, y: 0.24 * h, w: bw, h: bh };
+        createPvpRect = { x: bx + bw + bgap, y: 0.24 * h, w: bw, h: bh };
+        createPveBtnText.style.fontSize = Math.round(0.035 * h);
+        createPveBtnText.x = createPveRect.x + bw / 2;
+        createPveBtnText.y = 0.24 * h + bh / 2;
+        createPvpBtnText.style.fontSize = Math.round(0.035 * h);
+        createPvpBtnText.x = createPvpRect.x + bw / 2;
+        createPvpBtnText.y = 0.24 * h + bh / 2;
 
         lobbyMsg.style.fontSize = Math.round(0.028 * h);
         lobbyMsg.x = 0.5 * w;
@@ -648,6 +679,7 @@ import { createNetwork } from './network.js';
     boardScene.addChild(shotsGfx);
     boardScene.addChild(fxGfx);
     boardScene.addChild(statusText);
+    boardScene.addChild(countdownText);
     boardScene.addChild(hintText);
     boardScene.addChild(orderHint);
     boardScene.addChild(circle);
@@ -660,8 +692,10 @@ import { createNetwork } from './network.js';
 
     lobbyScene.addChild(lobbyTitle);
     lobbyScene.addChild(titleUnderline);
-    lobbyScene.addChild(createBtn);
-    lobbyScene.addChild(createBtnText);
+    lobbyScene.addChild(createPveBtn);
+    lobbyScene.addChild(createPveBtnText);
+    lobbyScene.addChild(createPvpBtn);
+    lobbyScene.addChild(createPvpBtnText);
     lobbyScene.addChild(lobbyMsg);
     lobbyScene.addChild(lobbyCards);
     lobbyScene.addChild(charBtn);
@@ -717,7 +751,8 @@ import { createNetwork } from './network.js';
             }
             over = nc || ni >= 0 || ch || ih;
         } else {
-            over = leaveHit(x, y) || overCircle(x, y) || (amOwner && abilityHit(x, y)) || cellAt(x, y);
+            over = leaveHit(x, y) || (amOwner && overCircle(x, y))
+                || (mySide >= 0 && abilityHit(x, y)) || cellAt(x, y);
         }
 
         app.canvas.style.cursor = over ? 'pointer' : 'default';
@@ -738,6 +773,8 @@ import { createNetwork } from './network.js';
     // sees the same board but cannot order or restart.
     let myName = '';
     let amOwner = false;
+    let mySide = -1;      // which side is ours: 0 left, 1 right, -1 spectator
+    let roomMode = 'pve';
     let roomOwnerName = '';
 
     // The last lobby list shown, kept so a resize can re-render the cards at the
@@ -765,6 +802,7 @@ import { createNetwork } from './network.js';
     let battleT = 0;
     let shots = [];
     let running = false;
+    let roomStatus = 'running';   // last battle.status the server sent
 
     // The unit of ours the player has picked (0 = none), the orders the server
     // reports as being in force, and the living units by id - an order is just
@@ -781,7 +819,7 @@ import { createNetwork } from './network.js';
     let yours = null;
 
     function canCommand(unit) {
-        if (!amOwner) return false;
+        if (mySide < 0) return false;
         return yours === null || yours.has(unit.id);
     }
 
@@ -899,14 +937,24 @@ import { createNetwork } from './network.js';
     }
 
     function statusLabel(status) {
-        return status === 'running' ? 'бой идёт' : 'бой окончен';
+        switch (status) {
+            case 'waiting':   return 'ждёт противника';
+            case 'ready':     return 'готов к бою';
+            case 'countdown': return 'обратный отсчёт';
+            case 'running':   return 'бой идёт';
+            default:          return 'бой окончен';
+        }
     }
 
     function inRect(x, y, r) {
         return r && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
     }
 
-    function createHit(x, y) { return canCreate && inRect(x, y, createRect); }
+    function createHit(x, y) {
+        if (canCreate && inRect(x, y, createPveRect)) return 'pve';
+        if (canCreate && inRect(x, y, createPvpRect)) return 'pvp';
+        return null;
+    }
     function leaveHit(x, y) { return inRect(x, y, leaveRect); }
     function cardHit(x, y) {
         for (let i = 0; i < cardRects.length; i++) {
@@ -925,13 +973,22 @@ import { createNetwork } from './network.js';
     // and every card. Called on hover changes and after a re-render, never from
     // the ticker — a background tab must not depend on a frame to look right.
     function paintLobby() {
-        if (createRect) {
-            const color = canCreate ? (hoverCreate ? 0xff5d78 : 0xe94560) : 0x6b2b3e;
-            createBtn.clear()
-                .roundRect(createRect.x, createRect.y, createRect.w, createRect.h,
-                           Math.min(14, createRect.h * 0.3))
+        if (createPveRect) {
+            const color = canCreate ? (hoverCreate === 'pve' ? 0xff5d78 : 0xe94560) : 0x6b2b3e;
+            createPveBtn.clear()
+                .roundRect(createPveRect.x, createPveRect.y, createPveRect.w, createPveRect.h,
+                           Math.min(14, createPveRect.h * 0.3))
                 .fill(color);
-            createBtnText.alpha = canCreate ? 1 : 0.5;
+            createPveBtnText.alpha = canCreate ? 1 : 0.5;
+        }
+
+        if (createPvpRect) {
+            const color = canCreate ? (hoverCreate === 'pvp' ? 0xff5d78 : 0xe94560) : 0x6b2b3e;
+            createPvpBtn.clear()
+                .roundRect(createPvpRect.x, createPvpRect.y, createPvpRect.w, createPvpRect.h,
+                           Math.min(14, createPvpRect.h * 0.3))
+                .fill(color);
+            createPvpBtnText.alpha = canCreate ? 1 : 0.5;
         }
 
         if (leaveRect) {
@@ -1006,7 +1063,8 @@ import { createNetwork } from './network.js';
             });
             name.anchor.set(0, 0.5);
             const meta = new PIXI.Text({
-                text: statusLabel(room.status) + ' · ' + (room.owner || '?')
+                text: (room.mode === 'pvp' ? 'PvP' : 'PvE') + ' · ' + statusLabel(room.status)
+                    + ' · ' + (room.owner || '?')
                     + ' · ' + room.players + ' ' + plural(room.players, 'игрок', 'игрока', 'игроков'),
                 style: { fontFamily: 'monospace', fill: 0xffffff, fontSize: Math.round(0.028 * h) },
             });
@@ -1516,6 +1574,9 @@ import { createNetwork } from './network.js';
         orders = [];
         yours = null;
         running = false;
+        roomStatus = 'running';
+        countdownText.visible = false;
+        countdownText.text = '';
         unitsById.clear();
         for (const column of leftT) column.fill(null);
         for (const column of rightT) column.fill(null);
@@ -1531,6 +1592,8 @@ import { createNetwork } from './network.js';
         screen = 'lobby';
         roomId = 0;
         amOwner = false;
+        mySide = -1;
+        roomMode = 'pve';
         roomOwnerName = '';
         clearBoardState();
         statusText.text = '';
@@ -1541,18 +1604,22 @@ import { createNetwork } from './network.js';
         updateOrderHint();
     }
 
-    function enterRoom(id, owner, ownerName) {
+    function enterRoom(id, owner, ownerName, mode, side) {
         screen = 'room';
         roomId = id;
         amOwner = !!owner;
+        mySide = typeof side === 'number' ? side : (owner ? 0 : -1);
+        roomMode = mode || 'pve';
         roomOwnerName = ownerName || '';
         clearBoardState();
         leaveBtnText.text = '← Комната ' + id;
+        hintText.text = roomMode === 'pvp' ? 'начать бой' : 'новый бой';
         circle.visible = amOwner;
-        abilityBtn.visible = amOwner;
-        abilityIcon.visible = amOwner;
-        abilityCdGfx.visible = amOwner;
-        abilityCdText.visible = amOwner;
+        hintText.visible = amOwner;
+        abilityBtn.visible = mySide >= 0;
+        abilityIcon.visible = mySide >= 0;
+        abilityCdGfx.visible = mySide >= 0;
+        abilityCdText.visible = mySide >= 0;
         loginEl.style.display = 'none';
         boardScene.visible = true;
         lobbyScene.visible = false;
@@ -1562,7 +1629,7 @@ import { createNetwork } from './network.js';
 
     function applyRoomResult(data) {
         if (data.ok && data.roomId) {
-            enterRoom(data.roomId, data.owner, data.ownerName);
+            enterRoom(data.roomId, data.owner, data.ownerName, data.mode, data.side);
             return;
         }
 
@@ -1599,6 +1666,9 @@ import { createNetwork } from './network.js';
         }
         else if (data.action === 'restart_result') {
             applyRestartResult(data);
+        }
+        else if (data.action === 'reset_result') {
+            applyResetResult(data);
         }
         else if (data.action === 'lobby') {
             // An anonymous client is also in the lobby and gets this list; render
@@ -1684,7 +1754,8 @@ import { createNetwork } from './network.js';
         redrawBoard();
 
         shots = data.shots || [];
-        running = data.status === 'running';
+        roomStatus = typeof data.status === 'string' ? data.status : 'running';
+        running = roomStatus === 'running';
 
         if (!running) {
             shots.length = 0;
@@ -1700,7 +1771,18 @@ import { createNetwork } from './network.js';
             left_won: 'победа синих',
             right_won: 'победа красных',
             draw: 'ничья',
-        }[data.status] || '';
+        }[roomStatus] || '';
+
+        if (roomStatus === 'waiting' || roomStatus === 'ready') {
+            statusText.text = roomStatus === 'waiting'
+                ? 'ждём противника…'
+                : (mySide === 0 ? 'противник вошёл — жми круг' : 'готово — хозяин начинает');
+        }
+
+        countdownText.visible = roomStatus === 'countdown';
+        if (countdownText.visible) {
+            countdownText.text = String(Math.max(1, Math.ceil((data.countdown || 0) / 1000)));
+        }
 
         updateOrderHint();
     }
@@ -1810,9 +1892,10 @@ import { createNetwork } from './network.js';
         }
 
         if (screen === 'lobby') {
-            if (createHit(x, y)) {
+            const createMode = createHit(x, y);
+            if (createMode) {
                 setLobbyMsg('создаём…');
-                net.send({ action: 'create_room' });
+                net.send({ action: 'create_room', mode: createMode });
                 return;
             }
 
@@ -1842,8 +1925,8 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        if (!amOwner) {
-            flash('комната игрока ' + (roomOwnerName || '?') + ' — командует только он', false);
+        if (mySide < 0) {
+            flash('ты зритель — командуют игроки', false);
             return;
         }
 
@@ -1855,7 +1938,7 @@ import { createNetwork } from './network.js';
                 paintAbility();
                 updateOrderHint();
             } else if (!running) {
-                flash('бой окончен — круг слева начинает новый', false);
+                flash(idleMessage(), false);
             } else if (!myUnitId()) {
                 flash('твой юнит мёртв', false);
             } else if (abilityRemaining() > 0) {
@@ -1870,7 +1953,7 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        if (overCircle(x, y)) {
+        if (amOwner && overCircle(x, y)) {
             console.log('Круг нажат!');
             net.send({ action: 'reset' });
             return;
@@ -1881,7 +1964,7 @@ import { createNetwork } from './network.js';
         if (abilityTargeting) {
             if (cell) {
                 const unit = grids[cell.side][cell.col][cell.row];
-                if (unit && cell.side === 1) {
+                if (unit && cell.side === (1 - mySide)) {
                     net.send({ action: 'ability', unitId: myUnitId(), targetId: unit.id });
                     abilityTargeting = false;
                     paintAbility();
@@ -1921,7 +2004,7 @@ import { createNetwork } from './network.js';
         const unit = grids[side][col][row];
 
         if (!running) {
-            flash('бой окончен — круг слева начинает новый', false);
+            flash(idleMessage(), false);
             return;
         }
 
@@ -1930,9 +2013,9 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        if (side === 0) {
+        if (side === mySide) {
             if (!canCommand(unit)) {
-                flash('этот юнит не твой — командуй светлыми', false);
+                flash('этот юнит не твой — командуй подсвеченным', false);
                 return;
             }
 
@@ -1965,7 +2048,7 @@ import { createNetwork } from './network.js';
         refused: 'цель недоступна',
         'no-unit': 'этот юнит уже мёртв',
         'not-yours': 'это чужой юнит',
-        'not-commanded': 'этот юнит не твой — командуй светлыми',
+        'not-commanded': 'этот юнит не твой — командуй подсвеченным',
         over: 'бой уже окончен',
         'bad-request': 'сервер не понял приказ',
     };
@@ -2003,6 +2086,22 @@ import { createNetwork } from './network.js';
             flash('способность применена', true);
         } else {
             flash(ABILITY_REASON_TEXT[data.reason] || 'способность отклонена', false);
+        }
+    }
+
+    // Why the reset circle refused, in a PvP room: the host cannot start before
+    // an opponent has joined, nor while a countdown is already running.
+    const RESET_REASON_TEXT = {
+        waiting: 'противник ещё не вошёл',
+        counting: 'обратный отсчёт уже идёт',
+        'not-owner': 'командует только хозяин комнаты',
+        'no-room': 'ты не в комнате',
+        'no-auth': 'войди, чтобы играть',
+    };
+
+    function applyResetResult(data) {
+        if (!data.ok) {
+            flash(RESET_REASON_TEXT[data.reason] || 'не получилось начать', false);
         }
     }
 
@@ -2092,6 +2191,18 @@ import { createNetwork } from './network.js';
         if (orderHint.text !== text) orderHint.text = text;
     }
 
+    // What to say while the fight is not running, by the room's phase. The owner
+    // sees the start/restart prompt; the guest waits for the owner; a spectator
+    // is handled separately in updateOrderHint.
+    function idleMessage() {
+        switch (roomStatus) {
+            case 'waiting':   return 'ждём противника…';
+            case 'ready':     return mySide === 0 ? 'противник вошёл — жми круг' : 'готово — хозяин начинает';
+            case 'countdown': return 'бой начинается…';
+            default:          return mySide === 0 ? 'бой окончен — круг слева начинает новый' : 'бой окончен — хозяин начнёт новый';
+        }
+    }
+
     function updateOrderHint() {
         // The reply to the last tap is still up: leave it alone until its timer
         // puts the standing hint back.
@@ -2100,8 +2211,8 @@ import { createNetwork } from './network.js';
         if (orderHint.style.fill !== 0xffffff) orderHint.style.fill = 0xffffff;
 
         // A spectator sees the same board but has nothing to command.
-        if (!amOwner) {
-            setHint('зритель — бой ведёт ' + (roomOwnerName || 'хозяин комнаты'));
+        if (mySide < 0) {
+            setHint('зритель — командуют игроки');
             return;
         }
 
@@ -2113,7 +2224,7 @@ import { createNetwork } from './network.js';
         }
 
         if (!running) {
-            setHint('бой окончен — круг слева начинает новый');
+            setHint(idleMessage());
             return;
         }
 
@@ -2125,7 +2236,7 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        setHint('светлый юнит — твой: тап по своему, потом по врагу');
+        setHint('подсвеченный юнит — твой: тап по своему, потом по врагу');
     }
 
     // The ability button: a circle with the icon, a green ring while it is ready
