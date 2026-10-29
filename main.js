@@ -359,8 +359,9 @@ import { createNetwork } from './network.js';
     app.stage.addChild(lobbyScene);
     app.stage.addChild(tapLayer);
 
+    // The login form covers both scenes until the player is authenticated.
     boardScene.visible = false;
-    lobbyScene.visible = true;
+    lobbyScene.visible = false;
 
     tapLayer.on('pointerdown', onTap);
     // A hint that something is clickable, from the same arithmetic as the tap.
@@ -390,10 +391,17 @@ import { createNetwork } from './network.js';
     // newer than this is a state the board has already moved past.
     let lastSeq = 0;
 
-    // Which scene the page shows, and which room it is inside. roomId 0 means
-    // the lobby; boardScene and lobbyScene swap visibility to match.
-    let screen = 'lobby';
+    // Which scene the page shows: the login form, the lobby, or a room. roomId
+    // 0 means not in a room; the login overlay, lobbyScene and boardScene swap
+    // to match.
+    let screen = 'login';
     let roomId = 0;
+
+    // Who is logged in, and whether the current room belongs to them. A spectator
+    // sees the same board but cannot order or restart.
+    let myName = '';
+    let amOwner = false;
+    let roomOwnerName = '';
 
     // The last lobby list shown, kept so a resize can re-render the cards at the
     // new size without asking the server again.
@@ -414,13 +422,15 @@ import { createNetwork } from './network.js';
     let orders = [];
     const unitsById = new Map();
 
-    // The ids the server says are the player's to command. Our side is not all
+    // The ids the server says are the owner's to command. Our side is not all
     // ours: the rest of the line is an ally that fights by itself. Null means
     // the server did not say - an older build - and then every unit of ours is
-    // treated as commandable, which is how it used to be.
+    // treated as commandable. Only the room's owner commands at all, so a
+    // spectator never sees the pale mark.
     let yours = null;
 
     function canCommand(unit) {
+        if (!amOwner) return false;
         return yours === null || yours.has(unit.id);
     }
 
@@ -433,17 +443,79 @@ import { createNetwork } from './network.js';
     const net = createNetwork(
         'wss://clickerbase.ru:9000',
         handleServerMessage,
-        // A restarted server counts from 1 again, and a room membership lives in
-        // the connection, not in the server. On every open the client forgets the
-        // board and, if it was in a room, asks to be let back in — a dropped
-        // socket must not strand the player in a dead room.
+        // A restarted server counts from 1 again, a room membership lives in the
+        // connection, and a login survives only while its token is known to the
+        // server. On every open the client forgets the board and re-authenticates
+        // with its stored token; being back in its room then follows the login.
         () => {
             lastSeq = 0;
             battleT = 0;
             selected = 0;
-            if (screen === 'room' && roomId) net.send({ action: 'join_room', roomId });
+
+            const token = localStorage.getItem('fen_token');
+            if (token) net.send({ action: 'login', token });
         },
     );
+
+    // --- login --------------------------------------------------------------
+    const loginEl = document.getElementById('login');
+    const loginName = document.getElementById('loginName');
+    const loginPassword = document.getElementById('loginPassword');
+    const loginBtn = document.getElementById('loginBtn');
+    const registerBtn = document.getElementById('registerBtn');
+    const loginMsg = document.getElementById('loginMsg');
+
+    function setLoginMsg(text) {
+        loginMsg.textContent = text;
+    }
+
+    function showLogin() {
+        screen = 'login';
+        amOwner = false;
+        boardScene.visible = false;
+        lobbyScene.visible = false;
+        loginEl.style.display = 'flex';
+    }
+
+    function submitAuth(kind) {
+        const name = loginName.value.trim();
+        const password = loginPassword.value;
+        if (!name) { setLoginMsg('введи имя'); return; }
+        if (password.length < 4) { setLoginMsg('пароль — минимум 4 символа'); return; }
+        setLoginMsg('');
+        loginPassword.value = '';
+        net.send({ action: kind, name, password });
+    }
+
+    loginBtn.addEventListener('click', () => submitAuth('login'));
+    registerBtn.addEventListener('click', () => submitAuth('register'));
+    loginName.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginPassword.focus(); });
+    loginPassword.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth('login'); });
+
+    function applyLoginResult(data) {
+        if (data.ok) {
+            localStorage.setItem('fen_token', data.token);
+            localStorage.setItem('fen_name', data.name);
+            myName = data.name;
+            setLoginMsg('');
+
+            if (screen === 'room' && roomId) {
+                // A reconnect while in a room: back in after the token is accepted.
+                net.send({ action: 'join_room', roomId });
+            } else {
+                showLobby();
+            }
+        } else {
+            showLogin();
+            setLoginMsg({
+                taken: 'это имя уже занято',
+                'bad-credentials': 'неверное имя или пароль',
+                'bad-token': 'сессия истекла — войди заново',
+                'weak-password': 'пароль — минимум 4 символа',
+                'bad-request': 'сервер не понял запрос',
+            }[data.reason] || 'не получилось войти');
+        }
+    }
 
     // --- lobby / rooms -----------------------------------------------------
     function plural(n, one, few, many) {
@@ -546,8 +618,8 @@ import { createNetwork } from './network.js';
             });
             name.anchor.set(0, 0.5);
             const meta = new PIXI.Text({
-                text: statusLabel(room.status) + ' · '
-                    + room.players + ' ' + plural(room.players, 'игрок', 'игрока', 'игроков'),
+                text: statusLabel(room.status) + ' · ' + (room.owner || '?')
+                    + ' · ' + room.players + ' ' + plural(room.players, 'игрок', 'игрока', 'игроков'),
                 style: { fontFamily: 'monospace', fill: 0xffffff, fontSize: Math.round(0.028 * h) },
             });
             meta.anchor.set(1, 0.5);
@@ -587,19 +659,26 @@ import { createNetwork } from './network.js';
     function showLobby() {
         screen = 'lobby';
         roomId = 0;
+        amOwner = false;
+        roomOwnerName = '';
         clearBoardState();
         statusText.text = '';
+        loginEl.style.display = 'none';
         boardScene.visible = false;
         lobbyScene.visible = true;
         redrawBoard();
         updateOrderHint();
     }
 
-    function enterRoom(id) {
+    function enterRoom(id, owner, ownerName) {
         screen = 'room';
         roomId = id;
+        amOwner = !!owner;
+        roomOwnerName = ownerName || '';
         clearBoardState();
         leaveBtnText.text = '← Комната ' + id;
+        circle.visible = amOwner;
+        loginEl.style.display = 'none';
         boardScene.visible = true;
         lobbyScene.visible = false;
         redrawBoard();
@@ -608,7 +687,7 @@ import { createNetwork } from './network.js';
 
     function applyRoomResult(data) {
         if (data.ok && data.roomId) {
-            enterRoom(data.roomId);
+            enterRoom(data.roomId, data.owner, data.ownerName);
             return;
         }
 
@@ -617,6 +696,7 @@ import { createNetwork } from './network.js';
         setLobbyMsg({
             full: 'все 10 комнат заняты — попробуй позже',
             'no-room': 'эта комната уже исчезла',
+            'no-auth': 'войди, чтобы играть',
             'bad-request': 'сервер не понял запрос',
         }[data.reason] || 'не получилось войти');
     }
@@ -630,11 +710,15 @@ import { createNetwork } from './network.js';
         else if (data.action === 'order_result') {
             applyOrderResult(data);
         }
+        else if (data.action === 'login_result') {
+            applyLoginResult(data);
+        }
         else if (data.action === 'lobby') {
-            // The server sends this only to lobby clients, so its arrival is
-            // itself the "you are in the lobby" signal.
+            // An anonymous client is also in the lobby and gets this list; render
+            // it so it is ready, but only show the lobby once logged in. Before
+            // that the login form stays on top.
             renderLobby(data.rooms || [], data.max);
-            showLobby();
+            if (myName) showLobby();
         }
         else if (data.action === 'room_result') {
             applyRoomResult(data);
@@ -783,10 +867,16 @@ import { createNetwork } from './network.js';
             return;
         }
 
-        // In a room: the back button first, then the board's own controls.
+        // In a room: the back button first, then the board's own controls — but
+        // only the owner commands; a spectator just watches.
         if (leaveHit(x, y)) {
             net.send({ action: 'leave_room' });
             showLobby();
+            return;
+        }
+
+        if (!amOwner) {
+            flash('комната игрока ' + (roomOwnerName || '?') + ' — командует только он', false);
             return;
         }
 
@@ -968,6 +1058,12 @@ import { createNetwork } from './network.js';
         if (performance.now() < flashUntil) return;
 
         if (orderHint.style.fill !== 0xffffff) orderHint.style.fill = 0xffffff;
+
+        // A spectator sees the same board but has nothing to command.
+        if (!amOwner) {
+            setHint('зритель — бой ведёт ' + (roomOwnerName || 'хозяин комнаты'));
+            return;
+        }
 
         if (!running) {
             setHint('бой окончен — круг слева начинает новый');

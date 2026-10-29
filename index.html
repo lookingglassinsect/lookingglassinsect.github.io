@@ -8,9 +8,73 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { width: 100%; height: 100%; overflow: hidden; background: #16213e; }
         canvas { display: block; }
+
+        /* The login form is the one piece of HTML UI left: it needs native text
+           input (focus, IME, mobile keyboard) that Pixi cannot provide. The
+           lobby and the board stay on the canvas. */
+        #login {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            background: #16213e;
+            color: #ffffff;
+            font-family: monospace;
+        }
+        #login h1 {
+            font-size: clamp(28px, 6vw, 48px);
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }
+        #login input {
+            width: min(80vw, 320px);
+            font-family: monospace;
+            font-size: clamp(15px, 2.5vw, 19px);
+            color: #ffffff;
+            background: #1b2744;
+            border: 1px solid #e94560;
+            border-radius: 8px;
+            padding: 11px 14px;
+            outline: none;
+        }
+        #login input:focus { border-color: #ff5d78; }
+        #login .row { display: flex; gap: 10px; }
+        #login button {
+            font-family: monospace;
+            font-size: clamp(14px, 2.2vw, 18px);
+            font-weight: bold;
+            color: #ffffff;
+            background: #e94560;
+            border: none;
+            border-radius: 8px;
+            padding: 11px 22px;
+            cursor: pointer;
+        }
+        #login button:hover { background: #ff5d78; }
+        #login button.secondary { background: transparent; border: 1px solid #e94560; }
+        #loginMsg {
+            font-size: clamp(13px, 2.2vw, 17px);
+            color: #ffd43b;
+            min-height: 1.2em;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
+    <div id="login">
+        <h1>вход</h1>
+        <input id="loginName" placeholder="имя" maxlength="24" autocomplete="username">
+        <input id="loginPassword" type="password" placeholder="пароль (мин. 4)" autocomplete="current-password">
+        <div class="row">
+            <button id="loginBtn">войти</button>
+            <button id="registerBtn" class="secondary">создать аккаунт</button>
+        </div>
+        <div id="loginMsg"></div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.x/dist/pixi.min.js"></script>
     <script type="module" src="main.js"></script>
 </body>
