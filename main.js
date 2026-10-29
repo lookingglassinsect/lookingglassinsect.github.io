@@ -27,6 +27,15 @@ import { createNetwork } from './network.js';
         }
     }
 
+    // The one ability every player-controlled unit has. Loaded once here; if it
+    // is missing the button still draws its circle and a white placeholder.
+    let abilityTexture = null;
+    try {
+        abilityTexture = await PIXI.Assets.load('assets/abilities/abil1.png');
+    } catch (err) {
+        console.warn('ability asset not loaded:', err);
+    }
+
     // A cell holds a unit or nothing. The server sends a flat list of units;
     // these two grids are that list laid out by cell, [side][col][row], where
     // col 1 is the front line next to the middle of the board. Our side is
@@ -86,6 +95,21 @@ import { createNetwork } from './network.js';
     const circle = new PIXI.Graphics();
     const ordersGfx = new PIXI.Graphics();
     const shotsGfx = new PIXI.Graphics();
+
+    // The ability button on the bottom panel: a circle for the base, the ability
+    // icon on top, a Graphics for the cooldown sweep, and a Text for the seconds
+    // left. fxGfx draws the short cast animation (a burst on the target, a pulse
+    // on the button) so it can be cleared and redrawn each frame like the shots.
+    const abilityBtn = new PIXI.Graphics();
+    const abilityIcon = new PIXI.Sprite(abilityTexture || PIXI.Texture.WHITE);
+    abilityIcon.anchor.set(0.5);
+    const abilityCdGfx = new PIXI.Graphics();
+    const abilityCdText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    abilityCdText.anchor.set(0.5);
+    const fxGfx = new PIXI.Graphics();
 
     // Taps are caught here, on one invisible layer over the whole board, and
     // turned into a cell or the button by arithmetic. It is not the obvious
@@ -222,6 +246,18 @@ import { createNetwork } from './network.js';
     // Side of one square, in screen pixels. drawCell() needs it, and layout()
     // recomputes it on every resize.
     let sqX = 0;
+
+    // The ability's state on this client. The cooldown is tracked as a wall-clock
+    // deadline so it counts down smoothly between snapshots and stays correct
+    // after a background tab pauses the renderer; the server's value is folded
+    // back in on every snapshot.
+    let abilityR = 0;              // button radius, set by layout()
+    let abilityTargeting = false;  // armed: the next enemy tap casts
+    let abilityCdUntil = 0;        // performance.now() when the ability is ready
+    let abilityCdTotal = 10000;    // from the snapshot's ability.cooldownMs
+    let abilityBurst = null;       // { side, col, row, until } ring on the hit target
+    let abilityPulseUntil = 0;     // button pulse until this timestamp
+    const FX_MS = 350;             // how long the cast animation runs
 
     function drawCell(g, unit, side) {
         // A cell is one Graphics for the tile plus two children drawn on top:
@@ -371,6 +407,22 @@ import { createNetwork } from './network.js';
         circle.x = 0.1 * w;
         circle.y = 0.9 * h;
 
+        // The ability button mirrors the reset circle on the right edge. Drawn
+        // at the local origin and positioned through .x/.y, like the circle.
+        abilityR = 0.05 * h;
+        abilityBtn.x = 0.9 * w;
+        abilityBtn.y = 0.9 * h;
+        abilityCdGfx.x = abilityBtn.x;
+        abilityCdGfx.y = abilityBtn.y;
+        abilityIcon.x = abilityBtn.x;
+        abilityIcon.y = abilityBtn.y;
+        abilityIcon.width = abilityR * 1.5;
+        abilityIcon.height = abilityR * 1.5;
+        abilityCdText.x = abilityBtn.x;
+        abilityCdText.y = abilityBtn.y;
+        abilityCdText.style.fontSize = Math.round(abilityR * 0.7);
+        paintAbility();
+
         hintText.style.fontSize = Math.round(0.045 * h);
         hintText.x = 0.16 * w;
         hintText.y = 0.9 * h;
@@ -460,10 +512,15 @@ import { createNetwork } from './network.js';
     // dotted line that shows which unit is under orders and against whom.
     boardScene.addChild(ordersGfx);
     boardScene.addChild(shotsGfx);
+    boardScene.addChild(fxGfx);
     boardScene.addChild(statusText);
     boardScene.addChild(hintText);
     boardScene.addChild(orderHint);
     boardScene.addChild(circle);
+    boardScene.addChild(abilityBtn);
+    boardScene.addChild(abilityIcon);
+    boardScene.addChild(abilityCdGfx);
+    boardScene.addChild(abilityCdText);
     boardScene.addChild(leaveBtn);
     boardScene.addChild(leaveBtnText);
 
@@ -514,7 +571,7 @@ import { createNetwork } from './network.js';
             }
             over = nc || ni >= 0 || ch;
         } else {
-            over = leaveHit(x, y) || overCircle(x, y) || cellAt(x, y);
+            over = leaveHit(x, y) || overCircle(x, y) || (amOwner && abilityHit(x, y)) || cellAt(x, y);
         }
 
         app.canvas.style.cursor = over ? 'pointer' : 'default';
@@ -573,6 +630,19 @@ import { createNetwork } from './network.js';
     function canCommand(unit) {
         if (!amOwner) return false;
         return yours === null || yours.has(unit.id);
+    }
+
+    // The one unit the player commands (0 when there is none, e.g. it died). The
+    // ability is cast by it, so the button needs this id to address it.
+    function myUnitId() {
+        if (!yours) return 0;
+        for (const id of yours) return id;
+        return 0;
+    }
+
+    // Milliseconds until the ability can be cast again, from the local deadline.
+    function abilityRemaining() {
+        return Math.max(0, abilityCdUntil - performance.now());
     }
 
     // The reply to the last tap, shown for a moment instead of the standing
@@ -966,6 +1036,10 @@ import { createNetwork } from './network.js';
         for (const column of rightT) column.fill(null);
         shotsGfx.clear();
         ordersGfx.clear();
+        abilityTargeting = false;
+        abilityCdUntil = 0;
+        abilityBurst = null;
+        abilityPulseUntil = 0;
     }
 
     function showLobby() {
@@ -990,6 +1064,10 @@ import { createNetwork } from './network.js';
         clearBoardState();
         leaveBtnText.text = '← Комната ' + id;
         circle.visible = amOwner;
+        abilityBtn.visible = amOwner;
+        abilityIcon.visible = amOwner;
+        abilityCdGfx.visible = amOwner;
+        abilityCdText.visible = amOwner;
         loginEl.style.display = 'none';
         boardScene.visible = true;
         lobbyScene.visible = false;
@@ -1021,6 +1099,9 @@ import { createNetwork } from './network.js';
         }
         else if (data.action === 'order_result') {
             applyOrderResult(data);
+        }
+        else if (data.action === 'ability_result') {
+            applyAbilityResult(data);
         }
         else if (data.action === 'login_result') {
             applyLoginResult(data);
@@ -1076,7 +1157,10 @@ import { createNetwork } from './network.js';
         // put the ring on somebody else and send the next order to them.
         const drift = data.t - battleT;
         const newBattle = Math.abs(drift) > 250;
-        if (newBattle) selected = 0;
+        if (newBattle) {
+            selected = 0;
+            abilityTargeting = false;
+        }
 
         // A unit that died cannot stay picked: its id is gone from the snapshot
         // and the next order would be refused for a unit that no longer exists.
@@ -1087,7 +1171,24 @@ import { createNetwork } from './network.js';
         // a missing one means an older server that calls the whole side ours.
         yours = Array.isArray(data.yours) ? new Set(data.yours) : null;
 
+        // If the commanded unit died while the ability was armed, drop the arm:
+        // the next enemy tap would otherwise address a unit that no longer exists.
+        if (abilityTargeting && !myUnitId()) abilityTargeting = false;
+
         orders = data.orders || [];
+
+        // The cooldown deadline: the snapshot's remaining time is added to the
+        // wall clock, taking the longer of the side lockout and the commanded
+        // unit's own cooldown. The snapshot is authoritative, so a refused cast
+        // is corrected here too.
+        abilityCdTotal = (data.ability && data.ability.cooldownMs) || 10000;
+        let cd = typeof data.lockout === 'number' ? data.lockout : 0;
+        const mineId = myUnitId();
+        if (mineId) {
+            const mine = unitsById.get(mineId);
+            if (mine && typeof mine.cd === 'number' && mine.cd > cd) cd = mine.cd;
+        }
+        abilityCdUntil = performance.now() + cd;
 
         redrawBoard();
 
@@ -1097,6 +1198,7 @@ import { createNetwork } from './network.js';
         if (!running) {
             shots.length = 0;
             shotsGfx.clear();
+            abilityTargeting = false;
         }
 
         // A clock jump that large is a new battle, not drift, so it is taken as
@@ -1159,6 +1261,14 @@ import { createNetwork } from './network.js';
         const dy = y - 0.9 * app.screen.height;
         const r = 0.05 * app.screen.height;
         return dx * dx + dy * dy <= r * r;
+    }
+
+    // The ability button is a circle too, so its hit test is the same distance
+    // check rather than a stored rectangle.
+    function abilityHit(x, y) {
+        const dx = x - abilityBtn.x;
+        const dy = y - abilityBtn.y;
+        return dx * dx + dy * dy <= abilityR * abilityR;
     }
 
     // Everything the page responds to starts here: the lobby when it is shown,
@@ -1224,6 +1334,29 @@ import { createNetwork } from './network.js';
             return;
         }
 
+        // The ability button toggles the targeting mode: arm, then tap an enemy
+        // to cast. Tapping the button again (or empty space) cancels it.
+        if (abilityHit(x, y)) {
+            if (abilityTargeting) {
+                abilityTargeting = false;
+                paintAbility();
+                updateOrderHint();
+            } else if (!running) {
+                flash('бой окончен — круг слева начинает новый', false);
+            } else if (!myUnitId()) {
+                flash('твой юнит мёртв', false);
+            } else if (abilityRemaining() > 0) {
+                flash('способность ещё перезаряжается', false);
+            } else {
+                abilityTargeting = true;
+                flashUntil = 0;   // the cast prompt takes over the hint band
+                orderHint.style.fill = 0xffffff;
+                setHint('выбери врага для способности');
+                paintAbility();
+            }
+            return;
+        }
+
         if (overCircle(x, y)) {
             console.log('Круг нажат!');
             net.send({ action: 'reset' });
@@ -1231,6 +1364,26 @@ import { createNetwork } from './network.js';
         }
 
         const cell = cellAt(x, y);
+
+        if (abilityTargeting) {
+            if (cell) {
+                const unit = grids[cell.side][cell.col][cell.row];
+                if (unit && cell.side === 1) {
+                    net.send({ action: 'ability', unitId: myUnitId(), targetId: unit.id });
+                    abilityTargeting = false;
+                    paintAbility();
+                    updateOrderHint();
+                } else {
+                    flash('цель — враг', false);
+                }
+            } else {
+                abilityTargeting = false;
+                paintAbility();
+                updateOrderHint();
+            }
+            return;
+        }
+
         if (cell) {
             cellClicked(cell.side, cell.col, cell.row);
             return;
@@ -1308,6 +1461,36 @@ import { createNetwork } from './network.js';
         const text = REASON_TEXT[data.reason]
             || (data.ok ? 'приказ принят' : 'приказ отклонён');
         flash(text, data.ok);
+    }
+
+    // Ability refusals have their own words, though the shape is the same as an
+    // order_result. `cooldown` is the unit's own timer, `locked` the team-wide
+    // window; today they coincide, but they stay separate so the text can differ.
+    const ABILITY_REASON_TEXT = {
+        cooldown: 'способность ещё перезаряжается',
+        locked: 'команда ещё не готова к способности',
+        'bad-target': 'выбери врага',
+        'no-unit': 'твой юнит уже мёртв',
+        'not-yours': 'это чужой юнит',
+        'not-commanded': 'этот юнит не твой',
+        over: 'бой уже окончен',
+        'not-owner': 'командует только хозяин комнаты',
+        'no-auth': 'войди, чтобы играть',
+        'bad-request': 'сервер не понял способность',
+    };
+
+    function applyAbilityResult(data) {
+        if (data.ok) {
+            // The cast animation is local: the target is known from the tap, so
+            // a burst can start at once. The snapshot then confirms the cooldown.
+            const t = unitsById.get(data.targetId);
+            if (t) abilityBurst = { side: t.side, col: t.col, row: t.row, until: performance.now() + FX_MS };
+            abilityPulseUntil = performance.now() + FX_MS;
+            abilityCdUntil = performance.now() + abilityCdTotal;
+            flash('способность применена', true);
+        } else {
+            flash(ABILITY_REASON_TEXT[data.reason] || 'способность отклонена', false);
+        }
     }
 
     function flash(text, ok) {
@@ -1409,6 +1592,13 @@ import { createNetwork } from './network.js';
             return;
         }
 
+        // The ability is armed: the standing hint yields to the cast prompt so
+        // it survives the snapshots that would otherwise put it back.
+        if (abilityTargeting) {
+            setHint('выбери врага для способности');
+            return;
+        }
+
         if (!running) {
             setHint('бой окончен — круг слева начинает новый');
             return;
@@ -1425,10 +1615,79 @@ import { createNetwork } from './network.js';
         setHint('светлый юнит — твой: тап по своему, потом по врагу');
     }
 
+    // The ability button: a circle with the icon, a green ring while it is ready
+    // and a gold one while it is armed for a target. On cooldown the icon dims
+    // and a dark pie slice covers the remaining fraction, with seconds on top.
+    function paintAbility() {
+        const r = abilityR;
+        const remaining = abilityRemaining();
+        const canCast = running && myUnitId() > 0 && remaining <= 0;
+
+        abilityBtn.clear().circle(0, 0, r).fill(0x1b2744);
+
+        if (abilityTargeting) {
+            abilityBtn.circle(0, 0, r)
+                .stroke({ width: Math.max(2, r * 0.12), color: SELECT_COLOR, alpha: 0.95 });
+        } else if (canCast) {
+            abilityBtn.circle(0, 0, r)
+                .stroke({ width: Math.max(2, r * 0.08), color: 0x2ecc71, alpha: 0.7 });
+        }
+
+        abilityIcon.alpha = canCast || abilityTargeting ? 1 : 0.35;
+
+        abilityCdGfx.clear();
+        abilityCdText.text = '';
+        if (remaining > 0) {
+            const frac = abilityCdTotal > 0
+                ? Math.max(0, Math.min(1, remaining / abilityCdTotal)) : 0;
+            if (frac > 0) {
+                // A pie slice from the top, clockwise, covering the remaining
+                // fraction. The radius line to the start is drawn explicitly so
+                // the sector does not depend on arc() connecting it itself.
+                const start = -Math.PI / 2;
+                const end = start + frac * Math.PI * 2;
+                abilityCdGfx.moveTo(0, 0)
+                    .lineTo(r * Math.cos(start), r * Math.sin(start))
+                    .arc(0, 0, r, start, end)
+                    .closePath()
+                    .fill({ color: 0x0d1526, alpha: 0.55 });
+            }
+            abilityCdText.text = (remaining / 1000).toFixed(1).replace('.', ',');
+        }
+    }
+
+    // The cast animation: an expanding ring on the target tile and a pulse on
+    // the button, both gone after FX_MS. Cleared and redrawn every frame.
+    function drawFx() {
+        fxGfx.clear();
+        const now = performance.now();
+
+        if (abilityBurst) {
+            if (now < abilityBurst.until) {
+                const p = (now - (abilityBurst.until - FX_MS)) / FX_MS;
+                const c = cellCenter(abilityBurst.side, abilityBurst.col, abilityBurst.row);
+                const r = sqX * (0.3 + 0.6 * p);
+                fxGfx.circle(c.x, c.y, r)
+                    .stroke({ width: Math.max(2, sqX * 0.05), color: 0xffd43b, alpha: 0.9 * (1 - p) });
+            } else {
+                abilityBurst = null;
+            }
+        }
+
+        if (now < abilityPulseUntil) {
+            const p = (now - (abilityPulseUntil - FX_MS)) / FX_MS;
+            const r = abilityR * (1 + 0.5 * p);
+            fxGfx.circle(abilityBtn.x, abilityBtn.y, r)
+                .stroke({ width: Math.max(2, abilityR * 0.08), color: 0x9be564, alpha: 0.8 * (1 - p) });
+        }
+    }
+
     app.ticker.add((ticker) => {
         if (running) battleT += ticker.deltaMS;
         drawOrders();
         drawShots();
+        drawFx();
+        paintAbility();
     });
 
     // The renderer fires 'resize' after app.screen already holds the new size,
