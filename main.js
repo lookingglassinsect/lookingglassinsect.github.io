@@ -44,6 +44,7 @@ import { createNetwork } from './network.js';
     const SIDE_COLOR = [0x3d7dd8, 0xd8503d];
     const TRAIL_COLOR = [0x4aa3ff, 0xff5a4a];
     const EMPTY_COLOR = 0x1b2744;
+    const SELECT_COLOR = 0xffe680;
 
     // Everything below is created once and positioned by layout(). Nothing keeps
     // a position or a size that was computed at startup, because that is what
@@ -52,7 +53,19 @@ import { createNetwork } from './network.js';
     const panel1 = new PIXI.Graphics();
     const panel2 = new PIXI.Graphics();
     const circle = new PIXI.Graphics();
+    const ordersGfx = new PIXI.Graphics();
     const shotsGfx = new PIXI.Graphics();
+
+    // Taps are caught here, on one invisible layer over the whole board, and
+    // turned into a cell or the button by arithmetic. It is not the obvious
+    // way round - each tile could carry its own handler - but a filled
+    // Graphics stopped answering hit tests in Pixi 8.22 (its containsPoint now
+    // asks the graphics context, which says no), so the board looked perfect
+    // and ignored every click. A Container with an explicit hitArea still
+    // works, and one layer also keeps the mapping in a single place.
+    const tapLayer = new PIXI.Container();
+    tapLayer.eventMode = 'static';
+    tapLayer.hitArea = new PIXI.Rectangle(0, 0, 1, 1);
 
     const statusText = new PIXI.Text({
         text: '',
@@ -65,6 +78,15 @@ import { createNetwork } from './network.js';
         style: { fontFamily: 'monospace', fill: 0xffffff },
     });
     hintText.anchor.set(0, 0.5);
+
+    // One line about orders, in the thin band between the panels and the bottom
+    // strip. It doubles as the reply to a refused order, so the player always
+    // learns why nothing happened instead of guessing.
+    const orderHint = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    orderHint.anchor.set(0.5, 0.5);
 
     // Side of one square, in screen pixels. drawCell() needs it, and layout()
     // recomputes it on every resize.
@@ -79,6 +101,14 @@ import { createNetwork } from './network.js';
         }
 
         g.roundRect(0, 0, sqX, sqX, sqX * 0.08).fill(SIDE_COLOR[side]);
+
+        // The unit the player has picked to command. Drawn as a ring inside the
+        // tile so the tile itself keeps the colour of its side.
+        if (side === 0 && unit.id === selected) {
+            const inset = Math.max(1.5, sqX * 0.05);
+            g.roundRect(inset, inset, sqX - inset * 2, sqX - inset * 2, sqX * 0.05)
+                .stroke({ width: Math.max(2, sqX * 0.045), color: SELECT_COLOR, alpha: 0.95 });
+        }
 
         // Role as a glyph rather than a different cell shape: the board is the
         // same 2x5 as before, and a melee unit and a ranged one differ by what
@@ -152,6 +182,8 @@ import { createNetwork } from './network.js';
         const byHeight = (sizeY - borderIndentY * 2 - sqIndentY * 4) / 5;
         const byWidth = (0.34 * w - 0.02 * w) / 2;
         sqX = Math.max(1, Math.min(byHeight, byWidth));
+        tapLayer.hitArea.width = w;
+        tapLayer.hitArea.height = h;
 
         for (let j = 0; j < 2; j++) {
             for (let i = 0; i < 5; i++) {
@@ -179,6 +211,10 @@ import { createNetwork } from './network.js';
         hintText.x = 0.16 * w;
         hintText.y = 0.9 * h;
 
+        orderHint.style.fontSize = Math.max(9, Math.round(0.028 * h));
+        orderHint.x = 0.5 * w;
+        orderHint.y = 0.838 * h;
+
         statusText.style.fontSize = Math.round(0.055 * h);
         statusText.x = 0.62 * w;
         statusText.y = 0.9 * h;
@@ -188,31 +224,32 @@ import { createNetwork } from './network.js';
     app.stage.addChild(panel1);
     app.stage.addChild(panel2);
 
-    for (let j = 0; j < 2; j++) {
-        for (let i = 0; i < 5; i++) {
-            const square = new PIXI.Graphics();
-            leftSquares[j][i] = square;
-            app.stage.addChild(square);
+    // A cell is also the board's only control, but the handlers live on the tap
+    // layer above, not on the tiles: see tapLayer.
+    for (const side of [0, 1]) {
+        for (let j = 0; j < 2; j++) {
+            for (let i = 0; i < 5; i++) {
+                const square = new PIXI.Graphics();
+                squareSets[side][j][i] = square;
+                app.stage.addChild(square);
+            }
         }
     }
 
-    for (let j = 0; j < 2; j++) {
-        for (let i = 0; i < 5; i++) {
-            const square = new PIXI.Graphics();
-            rightSquares[j][i] = square;
-            app.stage.addChild(square);
-        }
-    }
-
-    // Above the squares: a shot is drawn between two of them.
+    // Above the squares: a shot is drawn between two of them, and under it the
+    // dotted line that shows which unit is under orders and against whom.
+    app.stage.addChild(ordersGfx);
     app.stage.addChild(shotsGfx);
     app.stage.addChild(statusText);
     app.stage.addChild(hintText);
+    app.stage.addChild(orderHint);
+    app.stage.addChild(tapLayer);
 
-    circle.eventMode = 'static';
-    circle.on('pointerdown', () => {
-        console.log('Круг нажат!');
-        net.send({ action: 'reset' });
+    tapLayer.on('pointerdown', onTap);
+    // A hint that something is clickable, from the same arithmetic as the tap.
+    tapLayer.on('pointermove', (e) => {
+        const over = overCircle(e.global.x, e.global.y) || cellAt(e.global.x, e.global.y);
+        app.canvas.style.cursor = over ? 'pointer' : 'default';
     });
 
     app.stage.addChild(circle);
@@ -230,6 +267,19 @@ import { createNetwork } from './network.js';
     let shots = [];
     let running = false;
 
+    // The unit of ours the player has picked (0 = none), the orders the server
+    // reports as being in force, and the living units by id - an order is just
+    // two ids, so a cell has to be found from one.
+    let selected = 0;
+    let orders = [];
+    const unitsById = new Map();
+
+    // The reply to the last tap, shown for a moment instead of the standing
+    // hint, so a refused order never looks like a click that got lost.
+    let flashText = '';
+    let flashUntil = 0;
+    let flashTimer = 0;
+
     const net = createNetwork(
         'wss://clickerbase.ru:9000',
         handleServerMessage,
@@ -243,6 +293,9 @@ import { createNetwork } from './network.js';
 
         if (data.action === 'battle') {
             applyBattle(data);
+        }
+        else if (data.action === 'order_result') {
+            applyOrderResult(data);
         }
         else if (data.action === 'state') {
             // The older server (the binary kept as server.prev) still sends the
@@ -263,12 +316,20 @@ import { createNetwork } from './network.js';
 
         for (const column of leftT) column.fill(null);
         for (const column of rightT) column.fill(null);
+        unitsById.clear();
 
         for (const unit of data.units) {
             const grid = unit.side === 0 ? leftT : rightT;
             if (unit.col < 0 || unit.col > 1 || unit.row < 0 || unit.row > 4) continue;
             grid[unit.col][unit.row] = unit;
+            unitsById.set(unit.id, unit);
         }
+
+        // A unit that died cannot stay picked: its id is gone from the snapshot
+        // and the next order would be refused for a unit that no longer exists.
+        if (selected && !unitsById.has(selected)) selected = 0;
+
+        orders = data.orders || [];
 
         redrawBoard();
 
@@ -290,6 +351,8 @@ import { createNetwork } from './network.js';
             right_won: 'победа красных',
             draw: 'ничья',
         }[data.status] || '';
+
+        updateOrderHint();
     }
 
     function applyLegacyState(data) {
@@ -306,10 +369,130 @@ import { createNetwork } from './network.js';
         }
 
         shots = [];
+        orders = [];
         running = false;
+        selected = 0;
+        unitsById.clear();
         shotsGfx.clear();
+        ordersGfx.clear();
         statusText.text = '';
         redrawBoard();
+        updateOrderHint();
+    }
+
+    // Which tile a point is in, if any. The tiles were positioned by layout(),
+    // so this only has to compare against their current squares.
+    function cellAt(x, y) {
+        for (let side = 0; side < 2; side++) {
+            for (let col = 0; col < 2; col++) {
+                for (let row = 0; row < 5; row++) {
+                    const s = squareSets[side][col][row];
+                    if (x >= s.x && x < s.x + sqX && y >= s.y && y < s.y + sqX) {
+                        return { side, col, row };
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    function overCircle(x, y) {
+        const dx = x - 0.1 * app.screen.width;
+        const dy = y - 0.9 * app.screen.height;
+        const r = 0.05 * app.screen.height;
+        return dx * dx + dy * dy <= r * r;
+    }
+
+    // Everything the board responds to starts here.
+    function onTap(e) {
+        const x = e.global.x;
+        const y = e.global.y;
+
+        if (overCircle(x, y)) {
+            console.log('Круг нажат!');
+            net.send({ action: 'reset' });
+            return;
+        }
+
+        const cell = cellAt(x, y);
+        if (cell) {
+            cellClicked(cell.side, cell.col, cell.row);
+            return;
+        }
+
+        // Empty space: drop the pick.
+        if (selected) {
+            selected = 0;
+            redrawBoard();
+            updateOrderHint();
+        }
+    }
+
+    // One tap on a cell: a unit of ours becomes the selected one, an enemy cell
+    // names its target. The rules are not repeated here - the server checks the
+    // order and answers with `order_result`, and the snapshot says which orders
+    // are really in force.
+    function cellClicked(side, col, row) {
+        const unit = grids[side][col][row];
+
+        if (!running) {
+            flash('бой окончен — круг слева начинает новый', false);
+            return;
+        }
+
+        if (!unit) {
+            if (selected) { selected = 0; redrawBoard(); updateOrderHint(); }
+            return;
+        }
+
+        if (side === 0) {
+            selected = selected === unit.id ? 0 : unit.id;
+            redrawBoard();
+            updateOrderHint();
+            return;
+        }
+
+        if (!selected) {
+            flash('сначала выберите своего юнита', false);
+            return;
+        }
+
+        // Tapping the target a unit already has takes the order back; anything
+        // else gives a new one. Both travel as the same message, where targetId
+        // 0 means "no order".
+        const current = orders.find((o) => o.unit === selected);
+        const targetId = current && current.target === unit.id ? 0 : unit.id;
+        net.send({ action: 'order', unitId: selected, targetId });
+    }
+
+    // What the server made of the last order. The wire carries short codes, so
+    // the wording lives here, next to the rest of the Russian text.
+    const REASON_TEXT = {
+        ok: 'приказ принят',
+        cleared: 'приказ снят',
+        none: 'приказа уже не было',
+        refused: 'цель недоступна',
+        'no-unit': 'этот юнит уже мёртв',
+        'not-yours': 'это чужой юнит',
+        over: 'бой уже окончен',
+    };
+
+    function applyOrderResult(data) {
+        const text = REASON_TEXT[data.reason]
+            || (data.ok ? 'приказ принят' : 'приказ отклонён');
+        flash(text, data.ok);
+    }
+
+    function flash(text, ok) {
+        flashText = text;
+        flashUntil = performance.now() + 2200;
+        orderHint.style.fill = ok ? 0x9be564 : 0xffb36b;
+        setHint(text);
+        // A timer, not the render ticker: the reply has to disappear even while
+        // the renderer is idle (a background tab stops requestAnimationFrame but
+        // keeps the socket open, so the hint must not hang on a frame).
+        clearTimeout(flashTimer);
+        flashTimer = setTimeout(updateOrderHint, 2200);
     }
 
     function cellCenter(side, col, row) {
@@ -342,8 +525,76 @@ import { createNetwork } from './network.js';
         }
     }
 
+    // A dotted line from a unit under orders to its target, plus a ring on the
+    // target. A shot is a solid line with a travelling dot, so the two cannot be
+    // mistaken for each other.
+    function drawOrders() {
+        ordersGfx.clear();
+        if (!running) return;
+
+        for (const order of orders) {
+            const from = unitsById.get(order.unit);
+            const to = unitsById.get(order.target);
+            if (!from || !to) continue;
+
+            const a = cellCenter(from.side, from.col, from.row);
+            const b = cellCenter(to.side, to.col, to.row);
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const len = Math.hypot(dx, dy);
+            if (len <= 1) continue;
+
+            // The dots start and end inside the two tiles, so the line reads as
+            // running from unit to unit rather than across the glyphs.
+            const color = TRAIL_COLOR[from.side];
+            const pad = sqX * 0.6;
+            const t0 = pad / len;
+            const t1 = 1 - pad / len;
+
+            if (t1 > t0) {
+                const dots = 7;
+                for (let i = 0; i < dots; i++) {
+                    const t = t0 + (t1 - t0) * (i / (dots - 1));
+                    ordersGfx.circle(a.x + dx * t, a.y + dy * t, Math.max(1.5, sqX * 0.03))
+                        .fill({ color, alpha: 0.55 });
+                }
+            }
+
+            ordersGfx.circle(b.x, b.y, sqX * 0.3)
+                .stroke({ width: Math.max(2, sqX * 0.035), color, alpha: 0.55 });
+        }
+    }
+
+    function setHint(text) {
+        if (orderHint.text !== text) orderHint.text = text;
+    }
+
+    function updateOrderHint() {
+        // The reply to the last tap is still up: leave it alone until its timer
+        // puts the standing hint back.
+        if (performance.now() < flashUntil) return;
+
+        if (orderHint.style.fill !== 0xffffff) orderHint.style.fill = 0xffffff;
+
+        if (!running) {
+            setHint('бой окончен — круг слева начинает новый');
+            return;
+        }
+
+        if (selected) {
+            const ordered = orders.some((o) => o.unit === selected);
+            setHint(ordered
+                ? 'приказ отдан · тап по тому же врагу снимает его, по другому — меняет'
+                : 'выберите цель: тап по врагу отдаёт приказ');
+            return;
+        }
+
+        setHint('тап по своему юниту — выбрать, по врагу — приказать');
+    }
+
     app.ticker.add((ticker) => {
         if (running) battleT += ticker.deltaMS;
+        drawOrders();
         drawShots();
     });
 
