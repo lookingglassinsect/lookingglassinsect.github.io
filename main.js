@@ -36,6 +36,26 @@ import { createNetwork } from './network.js';
         console.warn('ability asset not loaded:', err);
     }
 
+    // Empty equipment-slot silhouettes and the three item icons. Loaded once,
+    // like the class sprites; a missing asset leaves that slot on its plain
+    // background instead of failing the whole page.
+    const emptySlotTextures = {};
+    for (const name of ['helmet', 'amulet', 'body', 'weapon', 'pants', 'gloves', 'boots', 'ring']) {
+        try {
+            emptySlotTextures[name] = await PIXI.Assets.load(`assets/invrentory/empty_${name}.png`);
+        } catch (err) {
+            console.warn(`empty slot asset ${name} not loaded:`, err);
+        }
+    }
+    const itemTextures = {};
+    for (const name of ['newbie_helmet', 'newbie_sword', 'newbie_boots']) {
+        try {
+            itemTextures[name] = await PIXI.Assets.load(`assets/items/${name}.png`);
+        } catch (err) {
+            console.warn(`item asset ${name} not loaded:`, err);
+        }
+    }
+
     // A cell holds a unit or nothing. The server sends a flat list of units;
     // these two grids are that list laid out by cell, [side][col][row], where
     // col 1 is the front line next to the middle of the board. Our side is
@@ -84,6 +104,27 @@ import { createNetwork } from './network.js';
         healer: 'Целитель',
         mage: 'Маг',
         archer: 'Лучник',
+    };
+
+    // Display metadata for the item types. The server is authoritative for the
+    // effects (hp/damage arrive on the item itself); this only names the item,
+    // says which slot it fits and picks its icon.
+    const ITEM_DEFS = {
+        newbie_helmet: { slot: 'helmet', name: 'Шлем новичка', icon: 'newbie_helmet' },
+        newbie_sword:  { slot: 'weapon',  name: 'Меч новичка',  icon: 'newbie_sword' },
+        newbie_boots:  { slot: 'boots',   name: 'Сапоги новичка', icon: 'newbie_boots' },
+    };
+
+    // Display names for the equipment slots, used in the item description.
+    const SLOT_RU = {
+        helmet: 'шлем',
+        amulet: 'амулет',
+        body: 'броня',
+        weapon: 'оружие',
+        pants: 'штаны',
+        gloves: 'перчатки',
+        boots: 'сапоги',
+        ring: 'кольцо',
     };
 
     // Everything below is created once and positioned by layout(). Nothing keeps
@@ -221,6 +262,86 @@ import { createNetwork } from './network.js';
     });
     charBtnText.anchor.set(0.5, 0.5);
 
+    // The inventory overlay: one Pixi scene drawn above the lobby, like the
+    // character page. Left = the character, center = the equipment slots,
+    // right = the backpack, the selected item's description, a placeholder
+    // panel (future abilities) and the delete button.
+    const invScene = new PIXI.Container();
+    const invBackdrop = new PIXI.Graphics();
+    const invPanel = new PIXI.Graphics();
+    const invTitle = new PIXI.Text({
+        text: 'Инвентарь',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    invTitle.anchor.set(0.5, 0);
+    const invCharSprite = new PIXI.Sprite();
+    invCharSprite.anchor.set(0.5);
+    const invCharName = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    const invCharStats = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    const invDescText = new PIXI.Text({
+        text: '',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    const invEmptyPanel = new PIXI.Graphics();
+    const invDeleteBtn = new PIXI.Graphics();
+    const invDeleteBtnText = new PIXI.Text({
+        text: 'удалить',
+        style: { fontFamily: 'monospace', fill: 0xffffff, fontWeight: 'bold' },
+    });
+    invDeleteBtnText.anchor.set(0.5, 0.5);
+    const invCloseBtn = new PIXI.Graphics();
+    const invCloseBtnText = new PIXI.Text({
+        text: '✕',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    invCloseBtnText.anchor.set(0.5, 0.5);
+
+    // One container per slot holds a background, the empty-slot silhouette and
+    // the item icon on top. Created once; layout sets geometry, render sets
+    // textures and the selection highlight.
+    const invSlots = new PIXI.Container();
+    function makeSlot(parent) {
+        const container = new PIXI.Container();
+        const bg = new PIXI.Graphics();
+        const emptySprite = new PIXI.Sprite(PIXI.Texture.WHITE);
+        emptySprite.anchor.set(0.5);
+        const itemSprite = new PIXI.Sprite(PIXI.Texture.WHITE);
+        itemSprite.anchor.set(0.5);
+        container.addChild(bg, emptySprite, itemSprite);
+        parent.addChild(container);
+        return { container, bg, emptySprite, itemSprite, rect: null };
+    }
+    const equipSlots = [
+        { slot: 'helmet', emptyName: 'helmet' },
+        { slot: 'amulet', emptyName: 'amulet' },
+        { slot: 'body',   emptyName: 'body' },
+        { slot: 'weapon', emptyName: 'weapon' },
+        { slot: 'pants',  emptyName: 'pants' },
+        { slot: 'gloves', emptyName: 'gloves' },
+        { slot: 'boots',  emptyName: 'boots' },
+        { slot: 'ring0',  emptyName: 'ring' },
+        { slot: 'ring1',  emptyName: 'ring' },
+        { slot: 'ring2',  emptyName: 'ring' },
+        { slot: 'ring3',  emptyName: 'ring' },
+        { slot: 'ring4',  emptyName: 'ring' },
+    ].map((d) => Object.assign({ slot: d.slot, emptyName: d.emptyName }, makeSlot(invSlots)));
+    const backpackSlots = Array.from({ length: 15 }, (_, index) =>
+        Object.assign({ index }, makeSlot(invSlots)));
+
+    // The lobby's button into the inventory, under the character button.
+    const invBtn = new PIXI.Graphics();
+    const invBtnText = new PIXI.Text({
+        text: 'инвентарь',
+        style: { fontFamily: 'monospace', fill: 0xffffff },
+    });
+    invBtnText.anchor.set(0.5, 0.5);
+
     // Hit-test rectangles, filled by layoutLobby()/renderLobby() and read by the
     // tap layer. They are plain data for the same reason the board routes taps
     // through arithmetic rather than per-shape handlers.
@@ -242,6 +363,10 @@ import { createNetwork } from './network.js';
     let charBtnRect = null;
     let hoverCharBtn = false;
     let charSpriteSize = 0;
+    let deleteBtnRect = null;
+    let invCloseRect = null;
+    let invBtnRect = null;
+    let hoverInvBtn = false;
 
     // Side of one square, in screen pixels. drawCell() needs it, and layout()
     // recomputes it on every resize.
@@ -437,6 +562,7 @@ import { createNetwork } from './network.js';
 
         layoutLobby();
         layoutCharScene();
+        layoutInventory();
 
         // A resize also re-lays the cards; they are positioned from the screen,
         // not from a stored size, so they have to be rebuilt at the new size.
@@ -448,6 +574,7 @@ import { createNetwork } from './network.js';
         // showing so a resize does not drop its text or textures.
         if (overlay === 'select') renderCharSelect();
         else if (overlay === 'profile') renderCharProfile();
+        else if (overlay === 'inventory') renderInventory();
     }
 
     // Positions the lobby scene. Called from layout() on every resize, and its
@@ -488,6 +615,13 @@ import { createNetwork } from './network.js';
         charBtnText.style.fontSize = Math.round(0.026 * h);
         charBtnText.x = charBtnRect.x + cbw / 2;
         charBtnText.y = charBtnRect.y + cbh / 2;
+
+        const ibw = Math.round(0.15 * w);
+        const ibh = Math.round(0.06 * h);
+        invBtnRect = { x: w - ibw - 0.02 * w, y: 0.02 * h + cbh + 0.012 * h, w: ibw, h: ibh };
+        invBtnText.style.fontSize = Math.round(0.026 * h);
+        invBtnText.x = invBtnRect.x + ibw / 2;
+        invBtnText.y = invBtnRect.y + ibh / 2;
 
         paintLobby();
     }
@@ -532,20 +666,28 @@ import { createNetwork } from './network.js';
     lobbyScene.addChild(lobbyCards);
     lobbyScene.addChild(charBtn);
     lobbyScene.addChild(charBtnText);
+    lobbyScene.addChild(invBtn);
+    lobbyScene.addChild(invBtnText);
 
     charScene.addChild(charBackdrop, charPanel, charTitle, charSprite, charStats,
                        arrowLeft, arrowRight, charActionBtn, charActionBtnText,
                        charCloseBtn, charCloseBtnText);
 
+    invScene.addChild(invBackdrop, invPanel, invTitle, invCharSprite, invCharName,
+                      invCharStats, invSlots, invDescText, invEmptyPanel,
+                      invDeleteBtn, invDeleteBtnText, invCloseBtn, invCloseBtnText);
+
     app.stage.addChild(boardScene);
     app.stage.addChild(lobbyScene);
     app.stage.addChild(charScene);
+    app.stage.addChild(invScene);
     app.stage.addChild(tapLayer);
 
     // The login form covers both scenes until the player is authenticated.
     boardScene.visible = false;
     lobbyScene.visible = false;
     charScene.visible = false;
+    invScene.visible = false;
 
     tapLayer.on('pointerdown', onTap);
     // A hint that something is clickable, from the same arithmetic as the tap.
@@ -559,17 +701,21 @@ import { createNetwork } from './network.js';
                 || inRect(x, y, actionBtnRect);
         } else if (overlay === 'profile') {
             over = inRect(x, y, actionBtnRect) || inRect(x, y, closeBtnRect);
+        } else if (overlay === 'inventory') {
+            over = invHit(x, y) || inRect(x, y, deleteBtnRect) || inRect(x, y, invCloseRect);
         } else if (screen === 'lobby') {
             const nc = createHit(x, y);
             const ni = cardHit(x, y);
             const ch = charHit(x, y);
-            if (nc !== hoverCreate || ni !== hoverCard || ch !== hoverCharBtn) {
+            const ih = inRect(x, y, invBtnRect);
+            if (nc !== hoverCreate || ni !== hoverCard || ch !== hoverCharBtn || ih !== hoverInvBtn) {
                 hoverCreate = nc;
                 hoverCard = ni;
                 hoverCharBtn = ch;
+                hoverInvBtn = ih;
                 paintLobby();
             }
-            over = nc || ni >= 0 || ch;
+            over = nc || ni >= 0 || ch || ih;
         } else {
             over = leaveHit(x, y) || overCircle(x, y) || (amOwner && abilityHit(x, y)) || cellAt(x, y);
         }
@@ -602,8 +748,15 @@ import { createNetwork } from './network.js';
     // server described, and which of them the picker is currently showing.
     let myCls = '';
     let classList = [];
-    let overlay = null;      // null | 'select' | 'profile'
+    let overlay = null;      // null | 'select' | 'profile' | 'inventory'
     let charIndex = 0;
+
+    // The player's gear, from the server. `myInventory` is the 15 backpack
+    // slots (null = empty), `myEquipment` the worn slots keyed by name, and
+    // `invSelectedUid` the item the description and the delete button act on.
+    let myInventory = [];
+    let myEquipment = {};
+    let invSelectedUid = null;
 
     // Our own copy of the battle clock, in milliseconds since the battle began.
     // It runs every frame, so a shot can be drawn between two snapshots instead
@@ -710,6 +863,9 @@ import { createNetwork } from './network.js';
             myName = data.name;
             myCls = data.cls || '';
             if (Array.isArray(data.classes)) classList = data.classes;
+            myInventory = Array.isArray(data.inventory) ? data.inventory : [];
+            myEquipment = data.equipment && typeof data.equipment === 'object' ? data.equipment : {};
+            invSelectedUid = null;
             setLoginMsg('');
 
             if (screen === 'room' && roomId) {
@@ -790,6 +946,13 @@ import { createNetwork } from './network.js';
                 .roundRect(charBtnRect.x, charBtnRect.y, charBtnRect.w, charBtnRect.h,
                            Math.min(10, charBtnRect.h * 0.3))
                 .fill(hoverCharBtn ? 0xff5d78 : 0xe94560);
+        }
+
+        if (invBtnRect) {
+            invBtn.clear()
+                .roundRect(invBtnRect.x, invBtnRect.y, invBtnRect.w, invBtnRect.h,
+                           Math.min(10, invBtnRect.h * 0.3))
+                .fill(hoverInvBtn ? 0xff5d78 : 0xe94560);
         }
 
         for (let i = 0; i < cardObjects.length; i++) {
@@ -1023,6 +1186,328 @@ import { createNetwork } from './network.js';
         }
     }
 
+    // --- inventory -----------------------------------------------------------
+    // The player's gear. The server sends the whole backpack and equipment after
+    // every change, so the client only renders; it never applies a delta itself.
+    // `invSelectedUid` is the item the description and the delete button act on,
+    // tracked by uid so a tap survives the equip/unequip move it triggers.
+
+    // hp/damage added up over every worn slot. These are the same numbers the
+    // server folds into the owner's unit when a battle starts.
+    function equipmentBonus() {
+        let hp = 0, damage = 0;
+        for (const slot of Object.keys(myEquipment)) {
+            const item = myEquipment[slot];
+            if (!item || typeof item !== 'object') continue;
+            hp += Number(item.hp) || 0;
+            damage += Number(item.damage) || 0;
+        }
+        return { hp, damage };
+    }
+
+    // The first item with this uid, searched in the backpack then the equipment.
+    function findItemByUid(uid) {
+        if (uid == null) return null;
+        for (const item of myInventory) if (item && item.uid === uid) return item;
+        for (const slot of Object.keys(myEquipment)) {
+            const item = myEquipment[slot];
+            if (item && item.uid === uid) return item;
+        }
+        return null;
+    }
+
+    function itemDescText(item) {
+        if (!item) return 'выбери предмет — его описание появится здесь';
+        const def = ITEM_DEFS[item.type];
+        const parts = [def ? def.name : String(item.type)];
+        if (def) parts.push('Слот: ' + (SLOT_RU[def.slot] || def.slot));
+        const effects = [];
+        if (Number(item.hp)) effects.push('здоровье +' + item.hp);
+        if (Number(item.damage)) effects.push('урон +' + item.damage);
+        if (effects.length) parts.push(effects.join(' · '));
+        return parts.join('\n');
+    }
+
+    // The character column: the class base stats with the equipment bonus shown
+    // in place, so what the player sees is what the next battle will use.
+    function invStatsText() {
+        const info = classList.find((c) => c.class === myCls);
+        if (!info) return 'класс не выбран';
+        const bonus = equipmentBonus();
+        const sec = info.delayMs / 1000;
+        const secStr = Number.isInteger(sec) ? String(sec) : sec.toFixed(1).replace('.', ',');
+        return [
+            'Класс: ' + (CLASS_RU[info.class] || info.class),
+            'Здоровье: ' + (info.hp + bonus.hp) + (bonus.hp ? ' (+' + bonus.hp + ')' : ''),
+            'Урон: ' + (info.damage + bonus.damage) + (bonus.damage ? ' (+' + bonus.damage + ')' : ''),
+            'Скорость атаки: каждые ' + secStr + ' с',
+            'Броня: ' + info.armor,
+            'Крит: ' + info.critChance + '% · ×' + ((100 + info.critMult) / 100),
+            'Уклонение: ' + info.dodge + '%',
+            'Тип урона: ' + (info.dmgType === 'magical' ? 'магический' : 'физический'),
+        ].join('\n');
+    }
+
+    // Puts a slot's container at (cx, cy), sizes its sprites, and records its
+    // hit rectangle and size. The background is painted later by highlightSlot
+    // so the selection ring can be part of the same fill.
+    function placeSlot(slotObj, cx, cy, size) {
+        slotObj.container.x = cx;
+        slotObj.container.y = cy;
+        slotObj.emptySprite.width = size * 0.88;
+        slotObj.emptySprite.height = size * 0.88;
+        slotObj.itemSprite.width = size * 0.88;
+        slotObj.itemSprite.height = size * 0.88;
+        slotObj.rect = { x: cx - size / 2, y: cy - size / 2, w: size, h: size };
+        slotObj.size = size;
+    }
+
+    function highlightSlot(slotObj, on) {
+        const s = slotObj.size || (slotObj.rect ? slotObj.rect.w : 1);
+        slotObj.bg.clear()
+            .roundRect(-s / 2, -s / 2, s, s, Math.min(8, s * 0.18))
+            .fill(0x0d1526)
+            .stroke({
+                width: on ? Math.max(2, s * 0.07) : 2,
+                color: on ? SELECT_COLOR : 0x2a3d6b,
+                alpha: 0.9,
+            });
+    }
+
+    function equipSlotFor(slot) {
+        return equipSlots.find((es) => es.slot === slot);
+    }
+
+    // Positions the panel and every slot. Only geometry lives here; render
+    // functions below set the textures, the character and the description.
+    function layoutInventory() {
+        const w = app.screen.width;
+        const h = app.screen.height;
+
+        invBackdrop.clear().rect(0, 0, w, h).fill({ color: 0x0d1526, alpha: 0.72 });
+
+        const pw = Math.min(0.92 * w, 860);
+        const ph = Math.min(0.88 * h, 640);
+        const px = (w - pw) / 2;
+        const py = (h - ph) / 2;
+        invPanel.clear().roundRect(px, py, pw, ph, Math.min(16, ph * 0.03)).fill(0x1b2744);
+
+        invTitle.style.fontSize = Math.round(0.05 * h);
+        invTitle.x = px + pw / 2;
+        invTitle.y = py + ph * 0.04;
+
+        const cbs = Math.min(30, Math.round(0.045 * h));
+        invCloseRect = { x: px + pw - cbs - 8, y: py + 8, w: cbs, h: cbs };
+        invCloseBtn.clear()
+            .roundRect(invCloseRect.x, invCloseRect.y, invCloseRect.w, invCloseRect.h,
+                       Math.min(8, invCloseRect.h * 0.3))
+            .fill(0x2a3d6b);
+        invCloseBtnText.style.fontSize = Math.round(cbs * 0.6);
+        invCloseBtnText.x = invCloseRect.x + cbs / 2;
+        invCloseBtnText.y = invCloseRect.y + cbs / 2;
+
+        // Three columns: character on the left, equipment in the middle,
+        // backpack and description on the right.
+        const leftX = px + pw * 0.02;
+        const midX = px + pw * 0.30;
+        const rightX = px + pw * 0.68;
+        const leftW = pw * 0.26;
+        const midW = pw * 0.38;
+        const rightW = pw * 0.30;
+
+        const charSize = Math.min(leftW * 0.8, ph * 0.22);
+        invCharSprite.x = leftX + leftW / 2;
+        invCharSprite.y = py + ph * 0.22;
+        invCharSprite.width = charSize;
+        invCharSprite.height = charSize;
+        invCharName.anchor.set(0.5, 0);
+        invCharName.style.fontSize = Math.round(0.032 * h);
+        invCharName.x = leftX + leftW / 2;
+        invCharName.y = py + ph * 0.14;
+        invCharStats.anchor.set(0, 0);
+        invCharStats.style.fontSize = Math.max(11, Math.round(0.026 * h));
+        invCharStats.x = leftX + leftW * 0.06;
+        invCharStats.y = invCharSprite.y + charSize / 2 + 0.02 * h;
+
+        // The equipment slots in a humanoid arrangement: helmet and amulet on
+        // top, weapon / body / gloves across the middle, pants and boots below,
+        // then the five rings in a row.
+        const slot = Math.min(midW * 0.30, ph * 0.085);
+        const gap = slot * 0.24;
+        const midCx = midX + midW / 2;
+        const topY = py + ph * 0.15;
+        const row = (n) => topY + n * (slot + gap);
+
+        placeSlot(equipSlotFor('helmet'), midCx, row(0), slot);
+        placeSlot(equipSlotFor('amulet'), midCx, row(1), slot);
+        placeSlot(equipSlotFor('weapon'), midCx - slot - gap, row(2), slot);
+        placeSlot(equipSlotFor('body'),   midCx, row(2), slot);
+        placeSlot(equipSlotFor('gloves'), midCx + slot + gap, row(2), slot);
+        placeSlot(equipSlotFor('pants'),  midCx, row(3), slot);
+        placeSlot(equipSlotFor('boots'),  midCx, row(4), slot);
+
+        const rs = Math.min(midW * 0.17, ph * 0.06);
+        const rg = rs * 0.35;
+        const ringW = 5 * rs + 4 * rg;
+        let ringX = midCx - ringW / 2 + rs / 2;
+        const ringY = row(5);
+        for (let i = 0; i < 5; i++) {
+            placeSlot(equipSlotFor('ring' + i), ringX, ringY, rs);
+            ringX += rs + rg;
+        }
+
+        // The backpack: a 5×3 grid of 15 slots.
+        const cols = 3;
+        const bs = Math.min((rightW / cols) * 0.72, ph * 0.055);
+        const bgap = bs * 0.35;
+        const btop = py + ph * 0.15;
+        const bleft = rightX + rightW / 2 - (cols * bs + (cols - 1) * bgap) / 2 + bs / 2;
+        for (let i = 0; i < 15; i++) {
+            placeSlot(backpackSlots[i],
+                      bleft + (i % cols) * (bs + bgap),
+                      btop + Math.floor(i / cols) * (bs + bgap), bs);
+        }
+
+        // The description of the selected item, the placeholder abilities panel,
+        // and the delete button fill the rest of the right column.
+        invDescText.anchor.set(0, 0);
+        invDescText.style.fontSize = Math.max(11, Math.round(0.026 * h));
+        invDescText.x = rightX + rightW * 0.05;
+        invDescText.y = btop + 5 * (bs + bgap) + 0.02 * h;
+
+        const emptyTop = py + ph * 0.80;
+        const emptyH = ph * 0.13;
+        invEmptyPanel.clear()
+            .roundRect(rightX + rightW * 0.05, emptyTop, rightW * 0.9, emptyH,
+                       Math.min(10, emptyH * 0.15))
+            .fill(0x0d1526);
+
+        const dbh = Math.min(0.05 * h, 34);
+        deleteBtnRect = { x: rightX + rightW * 0.05, y: py + ph - dbh - ph * 0.04, w: rightW * 0.9, h: dbh };
+        invDeleteBtn.clear()
+            .roundRect(deleteBtnRect.x, deleteBtnRect.y, deleteBtnRect.w, deleteBtnRect.h,
+                       Math.min(10, dbh * 0.3))
+            .fill(0xe94560);
+        invDeleteBtnText.style.fontSize = Math.round(0.026 * h);
+        invDeleteBtnText.x = deleteBtnRect.x + deleteBtnRect.w / 2;
+        invDeleteBtnText.y = deleteBtnRect.y + deleteBtnRect.h / 2;
+    }
+
+    function renderInventory() {
+        const info = classList.find((c) => c.class === myCls);
+        invCharName.text = myName || '';
+        invCharSprite.texture = classSprite(info);
+        invCharSprite.visible = true;
+        invCharStats.text = invStatsText();
+
+        // Equipment: the worn item icon, or the slot's empty silhouette.
+        for (const es of equipSlots) {
+            const item = myEquipment[es.slot];
+            es.emptySprite.texture = emptySlotTextures[es.emptyName] || PIXI.Texture.WHITE;
+            es.emptySprite.visible = true;
+            es.emptySprite.alpha = item ? 0.35 : 1;
+            es.itemSprite.visible = !!item;
+            if (item) es.itemSprite.texture = itemTextures[item.type] || PIXI.Texture.WHITE;
+            highlightSlot(es, !!item && item.uid === invSelectedUid);
+        }
+
+        // Backpack: the item icon on an otherwise plain slot.
+        for (let i = 0; i < backpackSlots.length; i++) {
+            const bs = backpackSlots[i];
+            const item = myInventory[i];
+            bs.emptySprite.visible = false;
+            bs.itemSprite.visible = !!item;
+            if (item) bs.itemSprite.texture = itemTextures[item.type] || PIXI.Texture.WHITE;
+            highlightSlot(bs, !!item && item.uid === invSelectedUid);
+        }
+
+        updateInventoryDescription();
+    }
+
+    function updateInventoryDescription() {
+        const item = findItemByUid(invSelectedUid);
+        invDescText.text = itemDescText(item);
+        const enabled = !!item;
+        invDeleteBtn.alpha = enabled ? 1 : 0.4;
+        invDeleteBtnText.alpha = enabled ? 1 : 0.4;
+    }
+
+    function openInventory() {
+        overlay = 'inventory';
+        renderInventory();
+        invScene.visible = true;
+    }
+
+    function closeInventory() {
+        overlay = null;
+        invScene.visible = false;
+        paintLobby();
+    }
+
+    function applyInventoryResult(data) {
+        if (data.ok) {
+            myInventory = Array.isArray(data.inventory) ? data.inventory : myInventory;
+            myEquipment = data.equipment && typeof data.equipment === 'object' ? data.equipment : myEquipment;
+            // Keep the description on the item it followed, or drop it if the
+            // item is gone (deleted).
+            if (invSelectedUid != null && !findItemByUid(invSelectedUid)) invSelectedUid = null;
+            if (overlay === 'inventory') renderInventory();
+        } else {
+            console.warn('inventory action failed:', data.reason);
+            invDescText.text = {
+                full: 'рюкзак полон — удали что-нибудь',
+                'no-auth': 'войди, чтобы играть',
+                'in-room': 'снаряжение меняется только в лобби',
+                empty: 'предмет уже исчез',
+                'bad-request': 'сервер не понял запрос',
+            }[data.reason] || 'не получилось';
+        }
+    }
+
+    function applyRestartResult(data) {
+        if (data.ok) {
+            myCls = '';
+            myInventory = Array.isArray(data.inventory) ? data.inventory : [];
+            myEquipment = data.equipment && typeof data.equipment === 'object' ? data.equipment : {};
+            invSelectedUid = null;
+            charIndex = 0;
+            openCharSelect();
+        } else {
+            console.warn('restart failed:', data.reason);
+        }
+    }
+
+    function invHit(x, y) {
+        for (const es of equipSlots) {
+            if (inRect(x, y, es.rect)) return { kind: 'equip', slot: es.slot };
+        }
+        for (let i = 0; i < backpackSlots.length; i++) {
+            if (inRect(x, y, backpackSlots[i].rect)) return { kind: 'backpack', index: i };
+        }
+        return null;
+    }
+
+    function tapEquipSlot(slot) {
+        const item = myEquipment[slot];
+        if (!item) return;
+        invSelectedUid = item.uid;
+        renderInventory();
+        net.send({ action: 'unequip', uid: item.uid });
+    }
+
+    function tapBackpackSlot(index) {
+        const item = myInventory[index];
+        if (!item) return;
+        invSelectedUid = item.uid;
+        renderInventory();
+        net.send({ action: 'equip', uid: item.uid });
+    }
+
+    function deleteSelected() {
+        if (invSelectedUid == null) return;
+        net.send({ action: 'delete_item', uid: invSelectedUid });
+    }
+
     function clearBoardState() {
         lastSeq = 0;
         battleT = 0;
@@ -1108,6 +1593,12 @@ import { createNetwork } from './network.js';
         }
         else if (data.action === 'set_class_result') {
             applySetClassResult(data);
+        }
+        else if (data.action === 'inventory_result') {
+            applyInventoryResult(data);
+        }
+        else if (data.action === 'restart_result') {
+            applyRestartResult(data);
         }
         else if (data.action === 'lobby') {
             // An anonymous client is also in the lobby and gets this list; render
@@ -1294,9 +1785,26 @@ import { createNetwork } from './network.js';
 
         if (overlay === 'profile') {
             if (inRect(x, y, actionBtnRect)) {
-                openCharSelect();
+                net.send({ action: 'restart' });
             } else if (inRect(x, y, closeBtnRect)) {
                 closeCharOverlay();
+            }
+            return;
+        }
+
+        if (overlay === 'inventory') {
+            if (inRect(x, y, invCloseRect)) {
+                closeInventory();
+                return;
+            }
+            if (inRect(x, y, deleteBtnRect)) {
+                deleteSelected();
+                return;
+            }
+            const hit = invHit(x, y);
+            if (hit) {
+                if (hit.kind === 'equip') tapEquipSlot(hit.slot);
+                else tapBackpackSlot(hit.index);
             }
             return;
         }
@@ -1310,6 +1818,11 @@ import { createNetwork } from './network.js';
 
             if (charHit(x, y)) {
                 openCharProfile();
+                return;
+            }
+
+            if (inRect(x, y, invBtnRect)) {
+                openInventory();
                 return;
             }
 
